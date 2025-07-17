@@ -1,0 +1,195 @@
+# =============================================================================
+# GEMS.SH PROMPT TEMPLATES CONFIGURATION
+# =============================================================================
+#
+# This YAML file contains prompt templates and their properties for the gems.sh
+# script, which provides an easy interface to run local LLM commands with
+# pre-configured prompts.
+#
+# USAGE:
+# ------
+# 1. Run gems.sh with a template: gems.sh -t TemplateName
+# 2. View available templates: gems.sh -h
+# 3. Select model: gems.sh -m modelname -t TemplateName
+# 4. Enable verbose mode: gems.sh -v -t TemplateName
+#
+# TEMPLATE STRUCTURE:
+# -------------------
+# Each template has the following structure:
+#
+# TemplateName:
+#   template: |
+#     Your prompt text here.
+#     Use {{input}} as placeholder for user input.
+#   properties:                    # Optional section
+#     detect_language: true        # Auto-detect input language
+#     output_language: "language"  # Expected output language
+#     json_schema:                 # Define expected JSON response structure
+#       field_name: type
+#       nested_object:
+#         sub_field: type
+#         array_field:
+#           - type
+#     json_field: "field_name"     # Extract specific field from JSON response
+#
+# TEMPLATE PROPERTIES:
+# --------------------
+# - detect_language: boolean
+#   Automatically detect the language of the input text
+#
+# - output_language: string
+#   Specify the expected output language (e.g., "English", "繁體中文")
+#
+# - json_schema: object
+#   Define the expected structure of JSON responses from the LLM.
+#   Supports nested objects and arrays. Common types: string, number, boolean
+#
+# - json_field: string
+#   When json_schema is defined, extract only this specific field from the
+#   JSON response instead of returning the full JSON object
+#
+# VARIABLE SUBSTITUTION:
+# ----------------------
+# - {{input}}: Replaced with user's input text
+# - Additional variables can be added by modifying the gems.sh script
+#
+# MULTILINE TEMPLATES:
+# --------------------
+# Use YAML's literal block scalar (|) for multiline prompts:
+#   template: |
+#     Line 1 of the prompt
+#     Line 2 of the prompt
+#     User input: {{input}}
+#
+# EXAMPLES:
+# ---------
+# Simple text processing:
+#   echo "Hello world" | gems.sh -t Summarize
+#
+# With specific model:
+#   echo "def hello(): print('hi')" | gems.sh -m codellama -t CodeExplain
+#
+# JSON output extraction:
+#   echo "Analyze this text" | gems.sh -t ComplexAnalysis
+#   # Returns only the 'summary' field due to json_field: summary
+#
+# =============================================================================
+
+# Prompt Templates Configuration
+# This file contains prompt templates and their properties for the gems.sh script
+
+prompt_templates:
+  # Writing and communication templates
+  Summarize:
+    template: |
+      Create a concise summary of the following text, highlighting the key points and main ideas.
+      Text: {{input}}
+
+  TextReviser:
+    template: |
+      Revise the following text for clarity, grammar, word choice, and sentence structure. Maintain a neutral tone and conversational style. Ensure that the revisions enhance readability while preserving the original meaning.
+      Text: {{input}}
+    properties:
+      detect_language: true
+      json_schema:
+        text: string
+        additional_info: string
+      json_field: text
+
+  EmailProfessional:
+    template: |
+      Rewrite the following text as a professional email. Make it polite, clear, and appropriate for business communication.
+      Text: {{input}}
+
+  BulletPoints:
+    template: |
+      Convert the following text into clear, organized bullet points.
+      Text: {{input}}
+    properties:
+      json_schema:
+        bullet_points:
+          - string
+        title: string
+      json_field: bullet_points
+
+  # Creative and brainstorming templates
+  Brainstorm:
+    template: |
+      Generate creative ideas and suggestions based on the following topic or problem. Provide diverse and innovative approaches.
+      Topic: {{input}}
+    properties:
+      json_schema:
+        ideas:
+          - title: string
+            description: string
+            feasibility: string
+        best_idea: string
+      json_field: ideas
+
+  # Research and analysis templates
+  ComplexAnalysis:
+    template: |
+      Analyze the following text comprehensively. Provide a detailed breakdown including sentiment, key topics, writing style assessment, and improvement suggestions.
+      Text: {{input}}
+    properties:
+      detect_language: true
+      json_schema:
+        analysis:
+          sentiment: string
+          confidence: number
+          key_topics:
+            - string
+          writing_style:
+            tone: string
+            complexity: string
+            readability_score: number
+        suggestions:
+          - string
+        summary: string
+      json_field: summary
+
+  ProsAndCons:
+    template: |
+      Analyze the following topic and provide a balanced list of pros and cons.
+      Topic: {{input}}
+    properties:
+      json_schema:
+        pros:
+          - string
+        cons:
+          - string
+        conclusion: string
+      json_field: conclusion
+
+  # Code-related templates
+  CodeReview:
+    template: |
+      Review the following code for best practices, potential bugs, security issues, and performance improvements. Provide specific suggestions with explanations.
+      Code: {{input}}
+    properties:
+      json_schema:
+        issues:
+          - type: string
+            severity: string
+            description: string
+            suggestion: string
+        overall_rating: string
+        summary: string
+      json_field: summary
+
+  CodeExplain:
+    template: |
+      Explain the following code in simple terms. Break down what each part does and how it works together.
+      Code: {{input}}
+
+  CodeOptimize:
+    template: |
+      Optimize the following code for better performance and readability. Explain the improvements made.
+      Code: {{input}}
+    properties:
+      json_schema:
+        optimized_code: string
+        improvements:
+          - string
+        explanation: string
+      json_field: optimized_code
