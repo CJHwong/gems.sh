@@ -6,6 +6,11 @@
 # This script runs a local LLM command and applies selected
 # pre-configured prompts to user input, making it easy to use LLMs
 # for specific tasks without writing new prompts each time.
+#
+# PLATFORM SUPPORT:
+# Currently supports macOS only. Cross-platform support for Linux
+# and other Unix-like systems is planned. See TODO comments throughout
+# the code for areas that need cross-platform implementation.
 #==========================================================
 
 #==========================================================
@@ -349,7 +354,7 @@ function load_templates_from_yaml() {
     
     # Check if yq is available for YAML parsing
     if ! command -v yq &> /dev/null; then
-        log_verbose "yq not found. Install with: brew install yq"
+        log_verbose "yq not found."
         return 1
     fi
     
@@ -442,7 +447,7 @@ function load_configuration_from_yaml() {
     
     # Check if yq is available for YAML parsing
     if ! command -v yq &> /dev/null; then
-        echo "ERROR: yq not found. Install with: brew install yq" >&2
+        echo "ERROR: yq not found." >&2
         echo "yq is required to parse the YAML configuration file." >&2
         return 1
     fi
@@ -582,21 +587,11 @@ function verify_dependencies() {
         fi
     fi
     
-    # Check for osascript (macOS AppleScript - required for GUI features)
-    if ! command -v osascript &> /dev/null; then
-        echo "ERROR: osascript not found. This script requires macOS."
-        ((errors++))
-    else
-        log_verbose "✓ osascript found (macOS AppleScript support)"
-    fi
-    
-    # Check for pbcopy (clipboard functionality - required)
-    if ! command -v pbcopy &> /dev/null; then
-        echo "ERROR: pbcopy not found. This script requires macOS clipboard support."
-        ((errors++))
-    else
-        log_verbose "✓ pbcopy found (clipboard support)"
-    fi
+    # Check platform-specific dependencies
+    # TODO: Add platform detection and call appropriate dependency checker
+    local platform_errors
+    platform_errors=$(macos_check_dependencies)
+    errors=$((errors + $?))
     
     # Optional dependencies with warnings
     log_verbose "Checking optional dependencies..."
@@ -604,7 +599,6 @@ function verify_dependencies() {
     # Check for yq (YAML parsing - optional but recommended)
     if ! command -v yq &> /dev/null; then
         log_verbose "WARNING: 'yq' not found. YAML template loading will be disabled."
-        log_verbose "Install with: brew install yq"
         ((warnings++))
     else
         log_verbose "✓ yq found (YAML template support)"
@@ -619,7 +613,6 @@ function verify_dependencies() {
     # Check for jq (JSON parsing - required for API communication)
     if ! command -v jq &> /dev/null; then
         echo "ERROR: 'jq' not found. JSON processing is required for API communication."
-        echo "Install with: brew install jq"
         ((errors++))
     else
         log_verbose "✓ jq found (JSON processing support)"
@@ -634,7 +627,6 @@ function verify_dependencies() {
     # Check for glow (markdown rendering - optional)
     if ! command -v glow &> /dev/null; then
         log_verbose "WARNING: 'glow' not found. Markdown rendering will be disabled."
-        log_verbose "Install with: brew install glow"
         ((warnings++))
     else
         log_verbose "✓ glow found (markdown rendering support)"
@@ -643,7 +635,6 @@ function verify_dependencies() {
     # Check for realpath/readlink (path resolution - semi-optional)
     if ! command -v realpath &> /dev/null && ! command -v readlink &> /dev/null; then
         log_verbose "WARNING: Neither 'realpath' nor 'readlink' found. Path resolution may be limited."
-        log_verbose "Install coreutils with: brew install coreutils"
         ((warnings++))
     else
         if command -v realpath &> /dev/null; then
@@ -713,7 +704,8 @@ function verify_dependencies() {
     if [[ -n "$RESULT_VIEWER_APP" ]]; then
         case "$RESULT_VIEWER_APP" in
             "Warp")
-                if [[ ! -d "/Applications/Warp.app" ]]; then
+                # TODO: Add cross-platform app detection
+                if [[ ! -d "/Applications/Warp.app" ]]; then  # macOS-specific path
                     log_verbose "WARNING: Warp app not found at /Applications/Warp.app"
                     log_verbose "Results won't be displayed in Warp."
                     ((warnings++))
@@ -722,7 +714,8 @@ function verify_dependencies() {
                 fi
                 ;;
             "iTerm2")
-                if [[ ! -d "/Applications/iTerm.app" ]]; then
+                # TODO: Add cross-platform terminal detection
+                if [[ ! -d "/Applications/iTerm.app" ]]; then  # macOS-specific path
                     log_verbose "WARNING: iTerm2 app not found at /Applications/iTerm.app"
                     log_verbose "Results won't be displayed in iTerm2."
                     ((warnings++))
@@ -731,7 +724,8 @@ function verify_dependencies() {
                 fi
                 ;;
             "Terminal")
-                log_verbose "✓ Using built-in Terminal app"
+                # TODO: Add cross-platform terminal support
+                log_verbose "✓ Using built-in Terminal app"  # macOS-specific
                 ;;
         esac
     fi
@@ -1011,10 +1005,11 @@ function init_prompt_templates() {
         log_verbose "Detected execution from Shortcuts or temp location, searching for actual script"
         
         # Try some common locations where the script might be
+        # TODO: Make these paths more generic and cross-platform
         local possible_locations=(
-            "/Users/hoss/Workspace/_tools/gems.sh"
+            "/Users/hoss/Workspace/_tools/gems.sh"  # TODO: Remove hardcoded user path
             "$HOME/Workspace/_tools/gems.sh"
-            "$(dirname "$HOME")/hoss/Workspace/_tools/gems.sh"
+            "$(dirname "$HOME")/hoss/Workspace/_tools/gems.sh"  # TODO: Remove hardcoded user path
         )
         
         for location in "${possible_locations[@]}"; do
@@ -1090,6 +1085,7 @@ function init_prompt_templates() {
 }
 
 # Select prompt template using GUI if not provided via command line
+# TODO: Add cross-platform template selection (terminal-based for non-macOS)
 function select_prompt_template() {
     # Build comma-separated list of prompt templates
     available_templates=""
@@ -1103,9 +1099,11 @@ function select_prompt_template() {
 
     # Prompt user to select template if not provided via command line
     if [ -z "$SELECTED_TEMPLATE" ]; then
-        SELECTED_TEMPLATE=$(osascript -e "choose from list {$available_templates} with prompt \"Select a prompt template to use:\" default items {\"$DEFAULT_PROMPT_TEMPLATE\"}")
+        # Use macOS-specific GUI selection for now
+        # TODO: Add platform detection and alternative selection methods
+        SELECTED_TEMPLATE=$(macos_select_template_gui "$available_templates" "$DEFAULT_PROMPT_TEMPLATE")
 
-        if [ "$SELECTED_TEMPLATE" = "false" ]; then
+        if [ -z "$SELECTED_TEMPLATE" ]; then
             echo "No template selected. Operation cancelled."
             exit 0
         fi
@@ -1123,7 +1121,6 @@ function validate_template() {
         done
         echo ""
         echo "To use other templates, ensure gems.yml is present and yq is installed:"
-        echo "  brew install yq"
         exit 1
     fi
 }
@@ -1265,26 +1262,19 @@ function cleanup_output() {
     
     if [[ -n "$OUTPUT_MARKDOWN_FILE" ]]; then
         # Display in configured viewer app
+        # TODO: Add cross-platform viewer support
         case "$RESULT_VIEWER_APP" in
             "homo")
                 # This case should not happen since homo uses pipe, but handle it gracefully
                 log_verbose "Warning: homo was specified but markdown file was used instead"
                 ;;
-            "Terminal")
-                osascript -e "tell application \"Terminal\"
-                    do script \"glow -p ${OUTPUT_MARKDOWN_FILE} && exit\"
-                end tell"
+            "Terminal"|"iTerm2"|"Warp")
+                # Use macOS-specific launcher for now
+                # TODO: Add platform detection and cross-platform app launching
+                macos_launch_viewer_app "$RESULT_VIEWER_APP" "$OUTPUT_MARKDOWN_FILE"
                 ;;
-            "iTerm2")
-                osascript -e "tell application \"iTerm2\"
-                    create window with default profile
-                    tell current session of current window
-                        write text \"glow -p ${OUTPUT_MARKDOWN_FILE} && exit\"
-                    end tell
-                end tell"
-                ;;
-            "Warp")
-                open -a /Applications/Warp.app "${OUTPUT_MARKDOWN_FILE}"
+            *)
+                log_verbose "Unknown viewer app: $RESULT_VIEWER_APP"
                 ;;
         esac
     fi
@@ -1633,8 +1623,13 @@ function detect_language() {
     echo "$detected_language"
 }
 
-# Copy content to clipboard with UTF-8 support
-function copy_to_clipboard() {
+#==========================================================
+# PLATFORM-SPECIFIC FUNCTIONS
+#==========================================================
+
+# macOS-specific clipboard copy function
+# TODO: Add cross-platform support for Linux (xclip/xsel/wl-copy), BSD, etc.
+function macos_copy_to_clipboard() {
     local content="$1"
     
     # Set UTF-8 locale temporarily and use a file-based approach for better UTF-8 handling
@@ -1654,8 +1649,93 @@ function copy_to_clipboard() {
     # Restore original locale
     export LANG="$original_lang"
     export LC_ALL="$original_lc_all"
+}
+
+# macOS-specific notification function
+# TODO: Add cross-platform support for Linux (notify-send), BSD, etc.
+function macos_show_notification() {
+    local message="$1"
+    osascript -e "display notification \"$message\""
+}
+
+# macOS-specific template selection GUI
+# TODO: Add cross-platform support with terminal-based selection (fzf, dialog, etc.)
+function macos_select_template_gui() {
+    local available_templates="$1"
+    local default_template="$2"
     
-    osascript -e "display notification \"LLM results copied to clipboard\""
+    local selected=$(osascript -e "choose from list {$available_templates} with prompt \"Select a prompt template to use:\" default items {\"$default_template\"}")
+    
+    if [ "$selected" = "false" ]; then
+        echo ""  # Return empty string for cancelled selection
+    else
+        echo "$selected"
+    fi
+}
+
+# macOS-specific application launcher
+# TODO: Add cross-platform support for Linux terminals (gnome-terminal, konsole, xterm)
+# TODO: Add support for generic file opening (xdg-open on Linux)
+function macos_launch_viewer_app() {
+    local app="$1"
+    local file_path="$2"
+    
+    case "$app" in
+        "Terminal")
+            osascript -e "tell application \"Terminal\"
+                do script \"glow -p ${file_path} && exit\"
+            end tell"
+            ;;
+        "iTerm2")
+            osascript -e "tell application \"iTerm2\"
+                create window with default profile
+                tell current session of current window
+                    write text \"glow -p ${file_path} && exit\"
+                end tell
+            end tell"
+            ;;
+        "Warp")
+            open -a /Applications/Warp.app "${file_path}"
+            ;;
+        *)
+            log_verbose "Unknown macOS viewer app: $app"
+            return 1
+            ;;
+    esac
+}
+
+# macOS-specific dependency checking
+# TODO: Add cross-platform dependency functions for Linux, BSD, etc.
+function macos_check_dependencies() {
+    local errors=0
+    
+    # Check for osascript (macOS AppleScript - required for GUI features)
+    if ! command -v osascript &> /dev/null; then
+        echo "ERROR: osascript not found. This script requires macOS."
+        ((errors++))
+    else
+        log_verbose "✓ osascript found (macOS AppleScript support)"
+    fi
+    
+    # Check for pbcopy (clipboard functionality - required)
+    if ! command -v pbcopy &> /dev/null; then
+        echo "ERROR: pbcopy not found. This script requires macOS clipboard support."
+        ((errors++))
+    else
+        log_verbose "✓ pbcopy found (clipboard support)"
+    fi
+    
+    return $errors
+}
+
+# Cross-platform clipboard copy function (currently macOS-only)
+# TODO: Implement platform detection and call appropriate clipboard function
+function copy_to_clipboard() {
+    local content="$1"
+    
+    # For now, only macOS is supported
+    macos_copy_to_clipboard "$content"
+    macos_show_notification "LLM results copied to clipboard"
 }
 
 #==========================================================
