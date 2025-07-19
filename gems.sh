@@ -9,21 +9,21 @@
 #==========================================================
 
 #==========================================================
-# CONFIGURATION
+# CONFIGURATION - All settings loaded from gems.yml
 #==========================================================
-# API settings
-API_BASE_URL="http://localhost:11434/v1"     # OpenAI-compatible API base URL
-API_KEY=""                                   # API key (optional for local APIs)
-API_TIMEOUT=120                              # Request timeout in seconds
-DEFAULT_MODEL="gemma3n"                      # Default model to use if none specified
-LANGUAGE_DETECTION_MODEL="gemma3n:e2b"       # Model used for language detection
-DEFAULT_PROMPT_TEMPLATE="Passthrough"        # Default prompt template if none selected
+# Configuration variables are loaded from gems.yml at runtime.
+# Command line arguments can override YAML settings.
+# See gems.yml for all available configuration options.
 
-# Template settings
-TEMPLATE_YAML_FILE="gems.yml"                # YAML file containing prompt templates (relative to script directory)
-
-# Output settings
-RESULT_VIEWER_APP=""                         # Application to open results: homo, Warp, Terminal, or iTerm2
+# Configuration variables (loaded from gems.yml)
+API_BASE_URL=""
+API_KEY=""
+API_TIMEOUT=""
+DEFAULT_MODEL=""
+LANGUAGE_DETECTION_MODEL=""
+DEFAULT_PROMPT_TEMPLATE=""
+TEMPLATE_YAML_FILE="gems.yml"  # Fixed filename for configuration and templates
+RESULT_VIEWER_APP=""
 
 #==========================================================
 # FUNCTIONS
@@ -286,31 +286,43 @@ function get_available_models() {
 
 # Display usage information
 function show_help() {
-    echo "Usage: gems.sh [-m model] [-t template] [-v] [-h] [--list-templates] [--template-info template] [text]"
+    echo "Usage: gems.sh [-m model] [-t template] [-v] [-h] [--list-templates] [--list-models] [--template-info template] [text]"
     echo "Options:"
-    echo "  -m <model>            Specify LLM model (default: $DEFAULT_MODEL)"
+    echo "  -m <model>            Specify LLM model (overrides gems.yml default)"
     echo "  -t <template>         Specify prompt template to use"
     echo "  -v                    Verbose mode (show debug information)"
     echo "  -h                    Display this help message"
+    echo "  --list-models         List all available models from the API"
     echo "  --list-templates      List all available templates with descriptions"
     echo "  --template-info <name>  Show detailed information about a specific template"
     echo ""
-    echo "Templates:"
-    echo "  Templates are loaded from $TEMPLATE_YAML_FILE if available (requires yq)."
-    echo "  If YAML loading fails, built-in templates are used as fallback."
+    echo "Configuration:"
+    echo "  All settings are loaded from gems.yml (requires yq)."
+    echo "  Command line arguments override YAML configuration."
     echo ""
     echo "Examples:"
     echo "  gems.sh 'Fix this sentence: Me and him went to store'"
     echo "  gems.sh -t CodeReview 'function foo() { return x + y; }'"
     echo "  gems.sh -m gemma3:4b-it-qat -t Summarize 'Long text to summarize...'"
-    echo ""
-    echo "Available prompt templates:"
-    for template_name in ${(k)PROMPT_TEMPLATES}; do
-        echo "  - $template_name"
-    done
+    echo "  gems.sh --list-models"
+
+    exit 0
+}
+
+# List available models from the API
+function list_models() {
+    # Load configuration first to get API endpoint
+    local script_path="${BASH_SOURCE[0]:-$0}"
+    local script_dir="$(dirname "$script_path")"
+    local yaml_file="$script_dir/$TEMPLATE_YAML_FILE"
     
-    echo ""
-    echo "Available models:"
+    if ! load_configuration_from_yaml "$yaml_file"; then
+        echo "ERROR: Failed to load configuration from gems.yml" >&2
+        echo "Please check that gems.yml exists and contains valid configuration." >&2
+        exit 1
+    fi
+    
+    echo "Available models from API:"
     local available_models
     available_models=$(get_available_models)
     if [ $? -eq 0 ] && [ -n "$available_models" ]; then
@@ -318,7 +330,9 @@ function show_help() {
             echo "  - $model"
         done
     else
-        echo "  Unable to retrieve model list. Check if ollama is installed and running."
+        echo "  Unable to retrieve model list. Check if your LLM service is running and accessible."
+        echo "  API endpoint: $API_BASE_URL"
+        exit 1
     fi
     
     exit 0
@@ -413,6 +427,70 @@ function load_templates_from_yaml() {
     export LANG="$original_lang"
     unset LC_ALL
     
+    return 0
+}
+
+# Load configuration from YAML file
+function load_configuration_from_yaml() {
+    local yaml_file="$1"
+    
+    if [[ ! -f "$yaml_file" ]]; then
+        echo "ERROR: Configuration file not found: $yaml_file" >&2
+        echo "Please ensure gems.yml exists in the script directory." >&2
+        return 1
+    fi
+    
+    # Check if yq is available for YAML parsing
+    if ! command -v yq &> /dev/null; then
+        echo "ERROR: yq not found. Install with: brew install yq" >&2
+        echo "yq is required to parse the YAML configuration file." >&2
+        return 1
+    fi
+    
+    log_verbose "Loading configuration from YAML file: $yaml_file"
+    
+    # Load API settings (required)
+    API_BASE_URL=$(yq eval '.configuration.api_base_url' "$yaml_file" 2>/dev/null | cat)
+    if [[ "$API_BASE_URL" == "null" || -z "$API_BASE_URL" ]]; then
+        echo "ERROR: api_base_url not found in gems.yml configuration" >&2
+        return 1
+    fi
+    
+    API_KEY=$(yq eval '.configuration.api_key' "$yaml_file" 2>/dev/null | cat)
+    if [[ "$API_KEY" == "null" ]]; then API_KEY=""; fi
+    
+    API_TIMEOUT=$(yq eval '.configuration.api_timeout' "$yaml_file" 2>/dev/null)
+    if [[ "$API_TIMEOUT" == "null" || -z "$API_TIMEOUT" ]]; then
+        echo "ERROR: api_timeout not found in gems.yml configuration" >&2
+        return 1
+    fi
+    
+    DEFAULT_MODEL=$(yq eval '.configuration.default_model' "$yaml_file" 2>/dev/null | cat)
+    if [[ "$DEFAULT_MODEL" == "null" || -z "$DEFAULT_MODEL" ]]; then
+        echo "ERROR: default_model not found in gems.yml configuration" >&2
+        return 1
+    fi
+    
+    LANGUAGE_DETECTION_MODEL=$(yq eval '.configuration.language_detection_model' "$yaml_file" 2>/dev/null | cat)
+    if [[ "$LANGUAGE_DETECTION_MODEL" == "null" || -z "$LANGUAGE_DETECTION_MODEL" ]]; then
+        echo "ERROR: language_detection_model not found in gems.yml configuration" >&2
+        return 1
+    fi
+    
+    DEFAULT_PROMPT_TEMPLATE=$(yq eval '.configuration.default_prompt_template' "$yaml_file" 2>/dev/null | cat)
+    if [[ "$DEFAULT_PROMPT_TEMPLATE" == "null" || -z "$DEFAULT_PROMPT_TEMPLATE" ]]; then
+        echo "ERROR: default_prompt_template not found in gems.yml configuration" >&2
+        return 1
+    fi
+    
+    RESULT_VIEWER_APP=$(yq eval '.configuration.result_viewer_app' "$yaml_file" 2>/dev/null | cat)
+    if [[ "$RESULT_VIEWER_APP" == "null" ]]; then RESULT_VIEWER_APP=""; fi
+    
+    log_verbose "Configuration loaded successfully"
+    log_verbose "API Base URL: $API_BASE_URL"
+    log_verbose "Default Model: $DEFAULT_MODEL"
+    log_verbose "Language Detection Model: $LANGUAGE_DETECTION_MODEL"
+    log_verbose "API Timeout: $API_TIMEOUT"
     return 0
 }
 
@@ -720,6 +798,10 @@ function parse_arguments() {
                 list_templates
                 exit 0
                 ;;
+            --list-models)
+                list_models
+                exit 0
+                ;;
             --template-info)
                 shift
                 if [[ -n $1 && $1 != -* ]]; then
@@ -753,10 +835,7 @@ function parse_arguments() {
         esac
     done
 
-    # Set default model if not specified
-    if [ -z "$SELECTED_MODEL" ]; then
-        SELECTED_MODEL="$DEFAULT_MODEL"
-    fi
+    # SELECTED_MODEL will be set later after YAML configuration is loaded
 
     # Set default for verbose mode if not specified
     if [ -z "$VERBOSE_MODE" ]; then
@@ -962,6 +1041,19 @@ function init_prompt_templates() {
     log_verbose "Script path: $script_path"
     log_verbose "YAML file path: $yaml_file"
     log_verbose "YAML file exists: $(test -f "$yaml_file" && echo "YES" || echo "NO")"
+    
+    # Load configuration from YAML file first
+    if ! load_configuration_from_yaml "$yaml_file"; then
+        echo "FATAL: Failed to load configuration from gems.yml" >&2
+        echo "Please check that gems.yml exists and contains valid configuration." >&2
+        exit 1
+    fi
+    
+    # Update SELECTED_MODEL if it wasn't explicitly set via command line
+    if [ -z "$SELECTED_MODEL" ]; then
+        SELECTED_MODEL="$DEFAULT_MODEL"
+        log_verbose "Using default model from YAML configuration: $SELECTED_MODEL"
+    fi
     
     if load_templates_from_yaml "$yaml_file"; then
         log_verbose "Successfully loaded templates from YAML file"
@@ -1575,14 +1667,14 @@ VERBOSE_MODE=false
 # Parse command line arguments first
 parse_arguments "$@"
 
-# Check for required dependencies
+# Initialize the prompt templates and load configuration
+init_prompt_templates
+
+# Check for required dependencies (after configuration is loaded)
 verify_dependencies
 
 # Validate configuration
 validate_configuration
-
-# Initialize the prompt templates after we know verbose mode
-init_prompt_templates
 
 # Show configuration information
 log_verbose "Using model: $SELECTED_MODEL"

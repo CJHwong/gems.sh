@@ -1,17 +1,34 @@
 # =============================================================================
-# GEMS.SH PROMPT TEMPLATES CONFIGURATION
+# GEMS.SH CONFIGURATION AND PROMPT TEMPLATES
 # =============================================================================
 #
-# This YAML file contains prompt templates and their properties for the gems.sh
-# script, which provides an easy interface to run local LLM commands with
-# pre-configured prompts.
+# This YAML file is the primary configuration source for gems.sh, containing
+# both system configuration and prompt templates. ALL configuration must be
+# defined here - the script has no hardcoded fallback values.
+#
+# CONFIGURATION REQUIREMENTS:
+# ---------------------------
+# - This file is REQUIRED for gems.sh to function
+# - All configuration sections must be present and valid
+# - The 'yq' tool is required to parse this YAML file
 #
 # USAGE:
 # ------
 # 1. Run gems.sh with a template: gems.sh -t TemplateName
 # 2. View available templates: gems.sh -h
-# 3. Select model: gems.sh -m modelname -t TemplateName
+# 3. Override model: gems.sh -m modelname -t TemplateName
 # 4. Enable verbose mode: gems.sh -v -t TemplateName
+#
+# CONFIGURATION STRUCTURE:
+# ------------------------
+# configuration:
+#   api_base_url: "http://localhost:11434/v1"    # Required: OpenAI-compatible API endpoint
+#   api_key: ""                                  # Optional: API key for authentication
+#   api_timeout: 120                             # Required: Request timeout in seconds
+#   default_model: "model_name"                  # Required: Default model when none specified
+#   language_detection_model: "model_name"       # Required: Model for language detection
+#   default_prompt_template: "Passthrough"       # Required: Default template when none specified
+#   result_viewer_app: ""                        # Optional: App to open results (homo, Warp, etc.)
 #
 # TEMPLATE STRUCTURE:
 # -------------------
@@ -74,6 +91,19 @@
 #   # Returns only the 'summary' field due to json_field: summary
 #
 # =============================================================================
+
+# Configuration Settings
+configuration:
+  # API settings
+  api_base_url: "http://localhost:11434/v1"     # OpenAI-compatible API base URL (default: Ollama)
+  api_key: ""                                   # API key (optional for local APIs)
+  api_timeout: 120                              # Request timeout in seconds
+  default_model: "gemma3n"                      # Default model to use if none specified
+  language_detection_model: "gemma3n:e2b"       # Model used for language detection
+  default_prompt_template: "Passthrough"        # Default prompt template if none selected
+  
+  # Output settings
+  result_viewer_app: ""                         # Application to open results: homo, Warp, Terminal, or iTerm2
 
 # Prompt Templates Configuration
 # This file contains prompt templates and their properties for the gems.sh script
