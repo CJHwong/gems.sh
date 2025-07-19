@@ -11,9 +11,10 @@
 #==========================================================
 # CONFIGURATION
 #==========================================================
-# LLM settings
-LLM_COMMAND="ollama"                         # Command to run LLM
-LLM_ATTR="run"                               # Command attribute (run for Ollama)
+# API settings
+API_BASE_URL="http://localhost:11434/v1"     # OpenAI-compatible API base URL
+API_KEY=""                                   # API key (optional for local APIs)
+API_TIMEOUT=120                              # Request timeout in seconds
 DEFAULT_MODEL="gemma3n"                      # Default model to use if none specified
 LANGUAGE_DETECTION_MODEL="gemma3n:e2b"       # Model used for language detection
 DEFAULT_PROMPT_TEMPLATE="Passthrough"        # Default prompt template if none selected
@@ -35,21 +36,250 @@ typeset -gA TEMPLATE_PROPERTIES
 # Log message if in verbose mode
 function log_verbose() {
     if [ "$VERBOSE_MODE" = true ]; then
-        echo "[DEBUG] $1"
+        echo "[DEBUG] $1" >&2
     fi
 }
 
-# Get available models from ollama
-function get_available_models() {
-    # Check if ollama command exists
-    if ! command -v "$LLM_COMMAND" &> /dev/null; then
-        echo "Error: '$LLM_COMMAND' is not installed or not in PATH."
+# Call LLM API with streaming support
+function call_llm_api() {
+    local model="$1"
+    local prompt="$2"
+    local temp_file="$3"
+    local stream="${4:-true}"
+    
+    # Construct JSON payload for OpenAI-compatible API
+    local json_payload
+    json_payload=$(jq -n \
+        --arg model "$model" \
+        --arg content "$prompt" \
+        --argjson stream "$stream" \
+        '{
+            "model": $model,
+            "messages": [{"role": "user", "content": $content}],
+            "stream": $stream,
+            "max_tokens": null,
+            "temperature": 0.7
+        }')
+    
+    log_verbose "API payload: $json_payload"
+    log_verbose "Calling API: $API_BASE_URL/chat/completions"
+    
+    # Prepare curl command with headers
+    local curl_headers=("-H" "Content-Type: application/json")
+    
+    # Add authorization header if API key is provided
+    if [[ -n "$API_KEY" ]]; then
+        curl_headers+=("-H" "Authorization: Bearer $API_KEY")
+    fi
+    
+    # Make API call with streaming support
+    if [[ "$stream" == "true" ]]; then
+        # Streaming mode - parse Server-Sent Events
+        while IFS= read -r line; do
+            # Parse SSE format: "data: {...}"
+            if [[ "$line" == "data: "* ]]; then
+                data_content="${line#data: }"
+                
+                # Skip [DONE] signal
+                if [[ "$data_content" == "[DONE]" ]]; then
+                    break
+                fi
+                
+                # Extract and output content directly from jq without adding extra newlines
+                printf '%s' "$data_content" | jq -j 'if .choices[0].delta.content != null and .choices[0].delta.content != "" then .choices[0].delta.content else empty end' 2>/dev/null | {
+                    # Stream directly to output and temp file simultaneously using tee
+                    if [[ -n "$temp_file" && "$temp_file" != "false" ]]; then
+                        tee -a "$temp_file"
+                    else
+                        cat
+                    fi
+                }
+            fi
+        done < <(curl -s --no-buffer \
+            "${curl_headers[@]}" \
+            --connect-timeout 10 \
+            --max-time "$API_TIMEOUT" \
+            -d "$json_payload" \
+            "$API_BASE_URL/chat/completions")
+    else
+        # Non-streaming mode
+        curl -s \
+            "${curl_headers[@]}" \
+            --connect-timeout 10 \
+            --max-time "$API_TIMEOUT" \
+            -d "$json_payload" \
+            "$API_BASE_URL/chat/completions" | \
+        jq -r '.choices[0].message.content // empty' 2>/dev/null
+    fi
+    
+    # Return curl exit code
+    return ${PIPESTATUS[0]:-$?}
+}
+
+# Check API response and handle common HTTP errors
+function check_api_response() {
+    local response="$1"
+    local http_code="$2"
+    
+    # Check for empty response
+    if [[ -z "$response" ]]; then
+        log_verbose "API Error: Empty response received"
         return 1
     fi
     
-    # Run ollama ls and extract the model names (first column), skipping the header row
+    # Check HTTP status codes
+    case "$http_code" in
+        200|201)
+            log_verbose "API call successful (HTTP $http_code)"
+            return 0
+            ;;
+        400)
+            local error_msg=$(echo "$response" | jq -r '.error.message // "Bad Request"' 2>/dev/null)
+            log_verbose "API Error (HTTP 400): $error_msg"
+            return 1
+            ;;
+        401)
+            log_verbose "API Error (HTTP 401): Unauthorized - check your API key"
+            return 1
+            ;;
+        404)
+            local error_msg=$(echo "$response" | jq -r '.error.message // "Not Found"' 2>/dev/null)
+            log_verbose "API Error (HTTP 404): $error_msg"
+            return 1
+            ;;
+        429)
+            log_verbose "API Error (HTTP 429): Rate limit exceeded"
+            return 1
+            ;;
+        500|502|503)
+            log_verbose "API Error (HTTP $http_code): Server error"
+            return 1
+            ;;
+        *)
+            log_verbose "API Error: Unexpected HTTP status $http_code"
+            return 1
+            ;;
+    esac
+}
+
+# Enhanced API call with better error handling
+function call_llm_api_with_error_handling() {
+    local model="$1"
+    local prompt="$2"
+    local stream="${3:-true}"
+    
+    # Create temp file for response headers
+    local temp_headers=$(mktemp)
+    local temp_response=$(mktemp)
+    
+    # Prepare curl command with headers
+    local curl_headers=("-H" "Content-Type: application/json")
+    if [[ -n "$API_KEY" ]]; then
+        curl_headers+=("-H" "Authorization: Bearer $API_KEY")
+    fi
+    
+    # Construct JSON payload
+    local json_payload
+    json_payload=$(jq -n \
+        --arg model "$model" \
+        --arg content "$prompt" \
+        --argjson stream "$stream" \
+        '{
+            "model": $model,
+            "messages": [{"role": "user", "content": $content}],
+            "stream": $stream,
+            "max_tokens": null,
+            "temperature": 0.7
+        }')
+    
+    if [[ "$stream" == "true" ]]; then
+        # For streaming, we can't easily capture HTTP status, so just use the original function
+        call_llm_api "$model" "$prompt" "$stream"
+    else
+        # For non-streaming, capture both response and HTTP status
+        local http_code
+        http_code=$(curl -s -w "%{http_code}" \
+            "${curl_headers[@]}" \
+            --connect-timeout 10 \
+            --max-time "$API_TIMEOUT" \
+            -d "$json_payload" \
+            -o "$temp_response" \
+            "$API_BASE_URL/chat/completions")
+        
+        local curl_exit_code=$?
+        local response_content=$(cat "$temp_response")
+        
+        # Clean up temp files
+        rm -f "$temp_headers" "$temp_response"
+        
+        # Check curl exit code first
+        if [[ $curl_exit_code -ne 0 ]]; then
+            log_verbose "Network error: curl failed with exit code $curl_exit_code"
+            return $curl_exit_code
+        fi
+        
+        # Check API response
+        if check_api_response "$response_content" "$http_code"; then
+            # Extract content from successful response
+            echo "$response_content" | jq -r '.choices[0].message.content // empty' 2>/dev/null
+            return 0
+        else
+            return 1
+        fi
+    fi
+}
+
+# Get available models from API endpoint
+function get_available_models() {
+    # Check if curl command exists
+    if ! command -v curl &> /dev/null; then
+        echo "Error: 'curl' is not installed or not in PATH."
+        return 1
+    fi
+    
+    # Prepare curl headers
+    local curl_headers=("-H" "Content-Type: application/json")
+    if [[ -n "$API_KEY" ]]; then
+        curl_headers+=("-H" "Authorization: Bearer $API_KEY")
+    fi
+    
+    # Call API to get models list with better error handling
+    local temp_response=$(mktemp)
+    local http_code
+    
+    http_code=$(curl -s -w "%{http_code}" \
+        "${curl_headers[@]}" \
+        --connect-timeout 10 \
+        --max-time 30 \
+        -o "$temp_response" \
+        "$API_BASE_URL/models")
+    
+    local curl_exit_code=$?
+    local models_response=$(cat "$temp_response")
+    rm -f "$temp_response"
+    
+    # Check curl exit code
+    if [[ $curl_exit_code -ne 0 ]]; then
+        log_verbose "Network error retrieving models: curl failed with exit code $curl_exit_code"
+        echo "Error: Network error while retrieving models from API."
+        return 1
+    fi
+    
+    # Check API response
+    if ! check_api_response "$models_response" "$http_code"; then
+        echo "Error: Failed to retrieve models from API (HTTP $http_code)."
+        return 1
+    fi
+    
+    # Extract model IDs using jq
     local models
-    models=$($LLM_COMMAND ls 2>/dev/null | awk 'NR>1 {print $1}' | sort)
+    models=$(echo "$models_response" | jq -r '.data[]?.id // empty' 2>/dev/null | sort)
+    
+    if [[ -z "$models" ]]; then
+        log_verbose "API response: $models_response"
+        echo "Error: No models found or invalid API response format."
+        return 1
+    fi
     
     echo "$models"
 }
@@ -256,20 +486,21 @@ function verify_dependencies() {
     # Required dependencies
     log_verbose "Checking required dependencies..."
     
-    # Check LLM command (required)
-    if ! command -v "$LLM_COMMAND" &> /dev/null; then
-        echo "ERROR: '$LLM_COMMAND' is not installed or not in PATH."
-        echo "Please install $LLM_COMMAND: https://ollama.com/download"
+    # Check curl (required for API calls)
+    if ! command -v curl &> /dev/null; then
+        echo "ERROR: 'curl' is not installed or not in PATH."
+        echo "curl is required for API communication. It should be pre-installed on macOS."
         ((errors++))
     else
-        log_verbose "✓ $LLM_COMMAND found"
+        log_verbose "✓ curl found (API communication support)"
         
-        # Test if ollama service is running
-        if ! $LLM_COMMAND list &> /dev/null; then
-            echo "WARNING: $LLM_COMMAND service may not be running. Try: ollama serve"
+        # Test API endpoint availability
+        if ! curl -s --connect-timeout 5 --max-time 10 "$API_BASE_URL/models" &> /dev/null; then
+            log_verbose "WARNING: API endpoint '$API_BASE_URL' may not be accessible."
+            log_verbose "Make sure your LLM service is running and accessible."
             ((warnings++))
         else
-            log_verbose "✓ $LLM_COMMAND service is running"
+            log_verbose "✓ API endpoint is accessible"
         fi
     fi
     
@@ -307,18 +538,18 @@ function verify_dependencies() {
         fi
     fi
     
-    # Check for jq (JSON parsing - required for JSON schema features)
+    # Check for jq (JSON parsing - required for API communication)
     if ! command -v jq &> /dev/null; then
-        log_verbose "WARNING: 'jq' not found. JSON field extraction will be disabled."
-        log_verbose "Install with: brew install jq"
-        ((warnings++))
+        echo "ERROR: 'jq' not found. JSON processing is required for API communication."
+        echo "Install with: brew install jq"
+        ((errors++))
     else
         log_verbose "✓ jq found (JSON processing support)"
         
         # Test jq functionality
         if ! echo '{"test": "value"}' | jq -r '.test' &> /dev/null; then
-            log_verbose "WARNING: jq installation may be corrupted"
-            ((warnings++))
+            echo "ERROR: jq installation may be corrupted"
+            ((errors++))
         fi
     fi
     
@@ -344,26 +575,37 @@ function verify_dependencies() {
         fi
     fi
     
-    # Check for default model availability
-    if command -v "$LLM_COMMAND" &> /dev/null && $LLM_COMMAND list &> /dev/null; then
-        if ! $LLM_COMMAND list | grep -q "^$DEFAULT_MODEL"; then
-            log_verbose "WARNING: Default model '$DEFAULT_MODEL' not found."
-            log_verbose "Available models:"
-            $LLM_COMMAND list 2>/dev/null | awk 'NR>1 {print "  - " $1}' | while read line; do log_verbose "$line"; done || log_verbose "  Unable to list models"
-            log_verbose "You can download the default model with: ollama pull $DEFAULT_MODEL"
-            ((warnings++))
-        else
-            log_verbose "✓ Default model '$DEFAULT_MODEL' is available"
-        fi
+    # Check for default model availability via API
+    if command -v curl &> /dev/null && command -v jq &> /dev/null; then
+        local available_models
+        available_models=$(get_available_models 2>/dev/null)
         
-        # Check language detection model
-        if ! $LLM_COMMAND list | grep -q "^$LANGUAGE_DETECTION_MODEL"; then
-            log_verbose "WARNING: Language detection model '$LANGUAGE_DETECTION_MODEL' not found."
-            log_verbose "Language detection features will be limited."
-            log_verbose "Download with: ollama pull $LANGUAGE_DETECTION_MODEL"
-            ((warnings++))
+        if [[ $? -eq 0 && -n "$available_models" ]]; then
+            if ! echo "$available_models" | grep -q "^$DEFAULT_MODEL$"; then
+                log_verbose "WARNING: Default model '$DEFAULT_MODEL' not found via API."
+                log_verbose "Available models:"
+                echo "$available_models" | while read -r model; do 
+                    log_verbose "  - $model"
+                done
+                log_verbose "Make sure the model is available through your LLM service."
+                ((warnings++))
+            else
+                log_verbose "✓ Default model '$DEFAULT_MODEL' is available"
+            fi
+            
+            # Check language detection model
+            if ! echo "$available_models" | grep -q "^$LANGUAGE_DETECTION_MODEL$"; then
+                log_verbose "WARNING: Language detection model '$LANGUAGE_DETECTION_MODEL' not found via API."
+                log_verbose "Language detection features will be limited."
+                log_verbose "Make sure the model is available through your LLM service."
+                ((warnings++))
+            else
+                log_verbose "✓ Language detection model '$LANGUAGE_DETECTION_MODEL' is available"
+            fi
         else
-            log_verbose "✓ Language detection model '$LANGUAGE_DETECTION_MODEL' is available"
+            log_verbose "WARNING: Unable to retrieve model list from API."
+            log_verbose "Model availability cannot be verified."
+            ((warnings++))
         fi
     fi
     
@@ -451,13 +693,18 @@ function validate_configuration() {
     local errors=0
     
     # Validate that required configuration variables are set
-    if [[ -z "$LLM_COMMAND" ]]; then
-        echo "Error: LLM_COMMAND is not configured"
+    if [[ -z "$API_BASE_URL" ]]; then
+        echo "Error: API_BASE_URL is not configured"
         ((errors++))
     fi
     
     if [[ -z "$DEFAULT_MODEL" ]]; then
         echo "Error: DEFAULT_MODEL is not configured"
+        ((errors++))
+    fi
+    
+    if [[ -z "$API_TIMEOUT" ]]; then
+        echo "Error: API_TIMEOUT is not configured"
         ((errors++))
     fi
     
@@ -837,6 +1084,67 @@ function write_to_output() {
     fi
 }
 
+# Write streaming content character by character for real-time display
+function write_to_output_stream() {
+    if [[ -n "$OUTPUT_MARKDOWN_FILE" ]]; then
+        # For files, use stdbuf to avoid buffering with cat
+        stdbuf -o0 cat >> "$OUTPUT_MARKDOWN_FILE"
+    elif [[ -n "$OUTPUT_PIPE" ]]; then
+        # For pipes, use stdbuf to avoid buffering
+        stdbuf -o0 cat >&3
+    else
+        # For terminal, use stdbuf to avoid buffering
+        stdbuf -o0 cat
+    fi
+}
+
+# Format JSON in output file to show properly formatted multi-line JSON
+function format_json_in_output_file() {
+    local output_file="$1"
+    
+    if [[ ! -f "$output_file" ]]; then
+        return 0
+    fi
+    
+    # Create a temporary file for processing
+    local temp_file=$(mktemp)
+    
+    # Process the file line by line to find and format JSON blocks
+    local in_json_block=false
+    local json_start_line=""
+    local json_content=""
+    
+    while IFS= read -r line; do
+        if [[ "$line" == *'```json{'* && "$in_json_block" == false ]]; then
+            # Found single-line compact JSON format
+            in_json_block=true
+            json_start_line="$line"
+            
+            # Extract JSON content from the line
+            local extracted_json="${line#*\`\`\`json}"
+            extracted_json="${extracted_json%\`\`\`*}"
+            
+            # Try to format the JSON
+            if echo "$extracted_json" | jq '.' >/dev/null 2>&1; then
+                # Successfully parsed, format it
+                echo '```json' >> "$temp_file"
+                echo "$extracted_json" | jq '.' >> "$temp_file"
+                echo '```' >> "$temp_file"
+            else
+                # Invalid JSON, keep original
+                echo "$line" >> "$temp_file"
+            fi
+            in_json_block=false
+        else
+            # Regular line, copy as-is
+            echo "$line" >> "$temp_file"
+        fi
+    done < "$output_file"
+    
+    # Replace the original file
+    mv "$temp_file" "$output_file"
+}
+
 # Cleanup output resources
 function cleanup_output() {
     # Prevent multiple cleanup calls
@@ -977,30 +1285,36 @@ $prompt_escaped
     local temp_response=$(mktemp)
     local exit_code
     
-    # Start LLM process and capture output in real-time
-    local result_header_written=false
+    # Start LLM API call and capture output in real-time
     write_to_output "### Result
 "
-    $LLM_COMMAND $LLM_ATTR $SELECTED_MODEL "$final_prompt" | tee "$temp_response" | while IFS= read -r line; do
-        # Stream each line of LLM output as it arrives
-        if [[ "$result_header_written" != "true" ]]; then
-            # Check if we need to wrap raw JSON output in details
-            if [[ -n "$json_field" && -n "$json_schema" ]]; then
-                write_to_output "#### Raw JSON Output
+    
+    # Check if we need to wrap raw JSON output in details
+    if [[ -n "$json_field" && -n "$json_schema" ]]; then
+        write_to_output "#### Raw JSON Output
 "
-            fi
-            result_header_written=true
-        fi
-        write_to_output "$line
-"
-    done
+    fi
+    
+    # Stream the API response directly to output 
+    call_llm_api "$SELECTED_MODEL" "$final_prompt" "$temp_response" | write_to_output_stream
     
     # Get exit code from the pipeline
     exit_code=${PIPESTATUS[0]}
     
     # Read the complete response from temp file
     response=$(cat "$temp_response")
+    
+    
     rm -f "$temp_response"
+    
+    # Format JSON in the output if we have JSON templates
+    if [[ -n "$json_field" && -n "$json_schema" ]]; then
+        if [[ -n "$OUTPUT_MARKDOWN_FILE" ]]; then
+            # Post-process the output file to format JSON properly
+            format_json_in_output_file "$OUTPUT_MARKDOWN_FILE"
+        fi
+    fi
+    
     
     # Handle errors
     if [[ $exit_code -ne 0 ]]; then
@@ -1021,10 +1335,28 @@ $prompt_escaped
         exit 1
     fi
     
-    # If we opened a JSON details block, we need to close it properly
+    # If we opened a JSON details block, reformat the compact JSON for better readability
     if [[ -n "$json_field" && -n "$json_schema" ]]; then
-        # Close the JSON code block first
-        write_to_output "---
+        # Check if the response contains compact JSON that needs reformatting
+        if [[ "$response" == *'```json'* && "$response" == *'}```'* ]]; then
+            # The model generates compact JSON in streaming mode, so let's reformat it
+            # Extract the JSON content between the code blocks
+            local json_content
+            if [[ "$response" == *$'```json\n{'* ]]; then
+                # Multi-line format: extract everything between ```json\n and \n```
+                json_content=$(echo "$response" | sed -n '/```json/,/```/{/```json/d; /```/d; p;}')
+            else
+                # Single-line format: extract JSON from ```json{...}```
+                json_content=$(echo "$response" | sed -n 's/.*```json\(.*\)```.*/\1/p')
+            fi
+            
+        fi
+        
+        # Close the JSON section
+        write_to_output "
+
+---
+
 #### Extracted JSON Field (_${json_field}_)
 
 "
@@ -1043,8 +1375,14 @@ $prompt_escaped
         
         # Try to find JSON between ``` blocks first
         if [[ "$response" == *'```json'* ]]; then
-            # Use awk to properly extract content between ```json and ``` while preserving newlines
-            json_content=$(printf '%s\n' "$response" | awk '/```json/{flag=1;next}/```/{flag=0}flag')
+            # Handle both multiline and single-line ```json{...}``` formats
+            if [[ "$response" == *'```json{'* ]]; then
+                # Single line format: ```json{...}```
+                json_content=$(echo "$response" | sed -n 's/.*```json\(.*\)```.*/\1/p')
+            else
+                # Multiline format with separate lines
+                json_content=$(printf '%s\n' "$response" | awk '/```json/{flag=1;next}/```/{flag=0}flag')
+            fi
         else
             # Use a more robust approach to extract JSON content
             # First, try to validate if the entire response is valid JSON
@@ -1148,6 +1486,7 @@ $prompt_escaped
     write_to_output "
 
 ---
+
 **✓ Processing complete**
 "
     
@@ -1195,9 +1534,9 @@ function detect_language() {
     
     local detection_prompt="You are a language identification specialist. Your only task is to determine the language of the provided text. Identify the language of this text. Respond with only the language name (e.g., 'English', 'Traditional Chinese'): $input_text"
     
-    # Run language detection
+    # Run language detection via API (non-streaming for reliability)
     local detected_language
-    detected_language=$($LLM_COMMAND $LLM_ATTR "$model" "$detection_prompt" | head -n 1)
+    detected_language=$(call_llm_api "$model" "$detection_prompt" false | head -n 1 | tr -d '\n')
     
     echo "$detected_language"
 }
@@ -1247,7 +1586,7 @@ init_prompt_templates
 
 # Show configuration information
 log_verbose "Using model: $SELECTED_MODEL"
-log_verbose "Using command: $LLM_COMMAND $LLM_ATTR"
+log_verbose "Using API: $API_BASE_URL"
 log_verbose "Language detection model: $LANGUAGE_DETECTION_MODEL"
 log_verbose "Default prompt template: $DEFAULT_PROMPT_TEMPLATE"
 
@@ -1263,4 +1602,7 @@ log_verbose "Template content:"
 log_verbose " ${PROMPT_TEMPLATES[\"$SELECTED_TEMPLATE\"]}"
 
 # Process the input with the selected template
-process_with_template
+# Filter out unwanted debug output that may leak through
+{
+    process_with_template
+} | grep -v "^json_content="
