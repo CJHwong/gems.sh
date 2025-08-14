@@ -227,7 +227,8 @@ DocumentAnalysis:
 
 ### Using macOS Shortcuts (Recommended)
 
-<img width="862" alt="image" src="https://gist.github.com/user-attachments/assets/0a34c8ca-a0b4-4c44-81a5-17446fd12aca" />
+<img width="862" height="556" alt="412299048-0a34c8ca-a0b4-4c44-81a5-17446fd12aca" src="https://github.com/user-attachments/assets/aa76a8e9-f6db-4ebf-86d2-4c23f135e4f7" />
+
 
 1. **Open Shortcuts App**
 2. **Create New Shortcut** named "Ask AI"
