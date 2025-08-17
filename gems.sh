@@ -1,5 +1,8 @@
 #!/bin/zsh
 
+# Ignore SIGPIPE to prevent script crash when window closes early
+trap '' PIPE
+
 #==========================================================
 # LLM Prompt Tool
 # 
@@ -92,11 +95,14 @@ function call_llm_api() {
                 
                 # Extract and output content directly from jq without adding extra newlines
                 printf '%s' "$data_content" | jq -j 'if .choices[0].delta.content != null and .choices[0].delta.content != "" then .choices[0].delta.content else empty end' 2>/dev/null | {
-                    # Stream directly to output and temp file simultaneously using tee
+                    # Stream directly to output and temp file simultaneously using tee with error handling
                     if [[ -n "$temp_file" && "$temp_file" != "false" ]]; then
-                        tee -a "$temp_file"
+                        if ! tee -a "$temp_file" 2>/dev/null; then
+                            # If tee fails (broken pipe), try to at least save to temp file
+                            cat >> "$temp_file" 2>/dev/null || true
+                        fi
                     else
-                        cat
+                        cat 2>/dev/null || true
                     fi
                 }
             fi
@@ -1165,8 +1171,11 @@ function write_to_output() {
         # Append to markdown file
         printf '%s' "$content" >> "$OUTPUT_MARKDOWN_FILE"
     elif [[ -n "$OUTPUT_PIPE" ]]; then
-        # Write to pipe using file descriptor 3
-        printf '%s' "$content" >&3
+        # Write to pipe using file descriptor 3 with error handling
+        if ! printf '%s' "$content" >&3 2>/dev/null; then
+            log_verbose "Pipe closed (window terminated early), stopping output..."
+            return 0  # Return success - early window close is not an error
+        fi
     else
         # Direct to terminal
         printf '%s' "$content"
@@ -1179,8 +1188,11 @@ function write_to_output_stream() {
         # For files, use stdbuf to avoid buffering with cat
         stdbuf -o0 cat >> "$OUTPUT_MARKDOWN_FILE"
     elif [[ -n "$OUTPUT_PIPE" ]]; then
-        # For pipes, use stdbuf to avoid buffering
-        stdbuf -o0 cat >&3
+        # For pipes, use stdbuf to avoid buffering with error handling
+        if ! stdbuf -o0 cat >&3 2>/dev/null; then
+            log_verbose "Pipe closed (window terminated early), stopping stream..."
+            return 0  # Return success - early window close is not an error
+        fi
     else
         # For terminal, use stdbuf to avoid buffering
         stdbuf -o0 cat
@@ -1369,11 +1381,13 @@ $prompt_escaped
     
     # Start LLM API call and capture output in real-time
     write_to_output "### Result
+
 "
     
     # Check if we need to wrap raw JSON output in details
     if [[ -n "$json_field" && -n "$json_schema" ]]; then
         write_to_output "#### Raw JSON Output
+
 "
     fi
     
@@ -1777,4 +1791,4 @@ log_verbose " ${PROMPT_TEMPLATES[\"$SELECTED_TEMPLATE\"]}"
 # Filter out unwanted debug output that may leak through
 {
     process_with_template
-} | grep -v "^json_content="
+} | grep -v "^json_content=" || true
