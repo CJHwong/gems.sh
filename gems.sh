@@ -1552,19 +1552,22 @@ $prompt_escaped
                     log_verbose "Array contains objects, formatting with titles and descriptions"
                     local formatted_result=$(printf '%s\n' "$extracted_value" | jq -r '.[] | "* " + .title + (if .description then ": " + .description else "" end)')
                     write_to_output "$formatted_result"
+                    # Set formatted result for clipboard
+                    response="$formatted_result"
                 else
                     # Array of strings - simple bullet point format
                     log_verbose "Array contains strings, formatting as simple bullet points"
                     local formatted_result=$(printf '%s\n' "$extracted_value" | jq -r '.[] | "* " + .')
                     write_to_output "$formatted_result"
+                    # Set formatted result for clipboard
+                    response="$formatted_result"
                 fi
             else
                 # Show the extracted value as plain text
                 write_to_output "$extracted_value"
+                # Set response for clipboard
+                response="$extracted_value"
             fi
-            
-            # Set response for clipboard
-            response="$extracted_value"
         else
             log_verbose "Warning: Could not extract JSON field '$json_field', using full response"
             if [[ "$VERBOSE_MODE" == true ]]; then
