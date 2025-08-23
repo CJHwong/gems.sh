@@ -48,6 +48,24 @@ function log_verbose() {
     fi
 }
 
+# Build a full API URL by safely joining API_BASE_URL with a path.
+# Ensures exactly one slash between base and path regardless of trailing/leading slashes.
+function build_api_url() {
+    local path="$1"
+    local base="$API_BASE_URL"
+    # Strip trailing slash from base
+    base="${base%/}"
+    # Ensure path starts with a single slash
+    if [[ -z "$path" ]]; then
+        echo "$base"
+        return 0
+    fi
+    if [[ "$path" != /* ]]; then
+        path="/$path"
+    fi
+    echo "$base$path"
+}
+
 # Resolve YAML file path in a directory, supporting both .yml and .yaml
 # Contract:
 # - Input: directory path (required)
@@ -112,7 +130,7 @@ function call_llm_api() {
         }')
     
     log_verbose "API payload: $json_payload"
-    log_verbose "Calling API: $API_BASE_URL/chat/completions"
+    log_verbose "Calling API: $(build_api_url "chat/completions")"
     
     # Prepare curl command with headers
     local curl_headers=("-H" "Content-Type: application/json")
@@ -153,7 +171,7 @@ function call_llm_api() {
             --connect-timeout 10 \
             --max-time "$API_TIMEOUT" \
             -d "$json_payload" \
-            "$API_BASE_URL/chat/completions")
+            "$(build_api_url "chat/completions")")
     else
         # Non-streaming mode
         curl -s \
@@ -161,7 +179,7 @@ function call_llm_api() {
             --connect-timeout 10 \
             --max-time "$API_TIMEOUT" \
             -d "$json_payload" \
-            "$API_BASE_URL/chat/completions" | \
+            "$(build_api_url "chat/completions")" | \
         jq -r '.choices[0].message.content // empty' 2>/dev/null
     fi
     
@@ -257,7 +275,7 @@ function call_llm_api_with_error_handling() {
             --max-time "$API_TIMEOUT" \
             -d "$json_payload" \
             -o "$temp_response" \
-            "$API_BASE_URL/chat/completions")
+            "$(build_api_url "chat/completions")")
         
         local curl_exit_code=$?
         local response_content=$(cat "$temp_response")
@@ -305,7 +323,7 @@ function get_available_models() {
         --connect-timeout 10 \
         --max-time 30 \
         -o "$temp_response" \
-        "$API_BASE_URL/models")
+        "$(build_api_url "models")")
     
     local curl_exit_code=$?
     local models_response=$(cat "$temp_response")
@@ -627,7 +645,7 @@ function verify_dependencies() {
         log_verbose "✓ curl found (API communication support)"
         
         # Test API endpoint availability
-        if ! curl -s --connect-timeout 5 --max-time 10 "$API_BASE_URL/models" &> /dev/null; then
+    if ! curl -s --connect-timeout 5 --max-time 10 "$(build_api_url "models")" &> /dev/null; then
             log_verbose "WARNING: API endpoint '$API_BASE_URL' may not be accessible."
             log_verbose "Make sure your LLM service is running and accessible."
             ((warnings++))
