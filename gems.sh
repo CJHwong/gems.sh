@@ -30,7 +30,7 @@ API_TIMEOUT=""
 DEFAULT_MODEL=""
 LANGUAGE_DETECTION_MODEL=""
 DEFAULT_PROMPT_TEMPLATE=""
-TEMPLATE_YAML_FILE="gems.yml"  # Fixed filename for configuration and templates
+TEMPLATE_YAML_FILE="gems.yml"  # Preferred filename; script also supports gems.yaml
 RESULT_VIEWER_APP=""
 
 #==========================================================
@@ -46,6 +46,48 @@ function log_verbose() {
     if [ "$VERBOSE_MODE" = true ]; then
         echo "[DEBUG] $1" >&2
     fi
+}
+
+# Resolve YAML file path in a directory, supporting both .yml and .yaml
+# Contract:
+# - Input: directory path (required)
+# - Output: echo absolute path to the YAML file if found; return 0
+# - Behavior: honors TEMPLATE_YAML_FILE if that exact file exists; otherwise tries
+#   the same basename with .yml/.yaml, then falls back to gems.yml/gems.yaml
+function resolve_yaml_in_dir() {
+    local dir="$1"
+    [[ -z "$dir" ]] && return 1
+
+    # 1) Exact match from TEMPLATE_YAML_FILE if present
+    if [[ -n "$TEMPLATE_YAML_FILE" && -f "$dir/$TEMPLATE_YAML_FILE" ]]; then
+        echo "$dir/$TEMPLATE_YAML_FILE"
+        return 0
+    fi
+
+    # 2) Try same basename with .yml/.yaml variants (if TEMPLATE_YAML_FILE provided)
+    if [[ -n "$TEMPLATE_YAML_FILE" ]]; then
+        local stem="${TEMPLATE_YAML_FILE%.*}"
+        if [[ -f "$dir/${stem}.yml" ]]; then
+            echo "$dir/${stem}.yml"
+            return 0
+        fi
+        if [[ -f "$dir/${stem}.yaml" ]]; then
+            echo "$dir/${stem}.yaml"
+            return 0
+        fi
+    fi
+
+    # 3) Default gems.* filenames
+    if [[ -f "$dir/gems.yml" ]]; then
+        echo "$dir/gems.yml"
+        return 0
+    fi
+    if [[ -f "$dir/gems.yaml" ]]; then
+        echo "$dir/gems.yaml"
+        return 0
+    fi
+
+    return 1
 }
 
 # Call LLM API with streaming support
@@ -308,7 +350,7 @@ function show_help() {
     echo "  --template-info <name>  Show detailed information about a specific template"
     echo ""
     echo "Configuration:"
-    echo "  All settings are loaded from gems.yml (requires yq)."
+    echo "  All settings are loaded from gems.yml or gems.yaml (requires yq)."
     echo "  Command line arguments override YAML configuration."
     echo ""
     echo "Examples:"
@@ -325,11 +367,12 @@ function list_models() {
     # Load configuration first to get API endpoint
     local script_path="${BASH_SOURCE[0]:-$0}"
     local script_dir="$(dirname "$script_path")"
-    local yaml_file="$script_dir/$TEMPLATE_YAML_FILE"
+    local yaml_file
+    yaml_file=$(resolve_yaml_in_dir "$script_dir") || yaml_file="$script_dir/$TEMPLATE_YAML_FILE"
     
     if ! load_configuration_from_yaml "$yaml_file"; then
-        echo "ERROR: Failed to load configuration from gems.yml" >&2
-        echo "Please check that gems.yml exists and contains valid configuration." >&2
+        echo "ERROR: Failed to load configuration from YAML file" >&2
+        echo "Please check that gems.yml or gems.yaml exists next to the script and contains valid configuration." >&2
         exit 1
     fi
     
@@ -447,7 +490,7 @@ function load_configuration_from_yaml() {
     
     if [[ ! -f "$yaml_file" ]]; then
         echo "ERROR: Configuration file not found: $yaml_file" >&2
-        echo "Please ensure gems.yml exists in the script directory." >&2
+        echo "Please ensure gems.yml or gems.yaml exists in the script directory." >&2
         return 1
     fi
     
@@ -686,9 +729,10 @@ function verify_dependencies() {
     
     # Check YAML template file
     local script_dir="$(dirname "${BASH_SOURCE[0]:-$0}")"
-    local yaml_file="$script_dir/$TEMPLATE_YAML_FILE"
+    local yaml_file
+    yaml_file=$(resolve_yaml_in_dir "$script_dir") || yaml_file="$script_dir/$TEMPLATE_YAML_FILE"
     if [[ ! -f "$yaml_file" ]]; then
-        log_verbose "WARNING: Template file '$yaml_file' not found."
+        log_verbose "WARNING: Template file not found (tried gems.yml and gems.yaml in $script_dir)."
         log_verbose "Only built-in templates will be available."
         ((warnings++))
     else
@@ -1004,28 +1048,8 @@ function init_prompt_templates() {
         script_path="$0"
     fi
     
-    # Special handling for macOS Shortcuts and other edge cases
-    # If the script path looks like a temp file or doesn't contain our expected script name,
-    # try to find the script in common locations
-    if [[ "$script_path" == *"/tmp/"* ]] || [[ "$script_path" == *"/var/"* ]] || [[ ! "$script_path" == *"gems.sh"* ]]; then
-        log_verbose "Detected execution from Shortcuts or temp location, searching for actual script"
-        
-        # Try some common locations where the script might be
-        # TODO: Make these paths more generic and cross-platform
-        local possible_locations=(
-            "/Users/hoss/Workspace/_tools/gems.sh"  # TODO: Remove hardcoded user path
-            "$HOME/Workspace/_tools/gems.sh"
-            "$(dirname "$HOME")/hoss/Workspace/_tools/gems.sh"  # TODO: Remove hardcoded user path
-        )
-        
-        for location in "${possible_locations[@]}"; do
-            if [[ -f "$location" ]]; then
-                script_path="$location"
-                log_verbose "Found script at: $script_path"
-                break
-            fi
-        done
-    fi
+    # Use the script's own location to find accompanying files like gems.yml
+    # Avoid any user-specific hardcoded paths or external searches.
     
     # Resolve the real path (handles symlinks and relative paths)
     if command -v realpath &> /dev/null; then
@@ -1036,7 +1060,8 @@ function init_prompt_templates() {
     fi
     
     script_dir="$(dirname "$script_path")"
-    local yaml_file="$script_dir/$TEMPLATE_YAML_FILE"
+    local yaml_file
+    yaml_file=$(resolve_yaml_in_dir "$script_dir") || yaml_file="$script_dir/$TEMPLATE_YAML_FILE"
     
     log_verbose "Script directory: $script_dir"
     log_verbose "Script path: $script_path"
@@ -1045,8 +1070,8 @@ function init_prompt_templates() {
     
     # Load configuration from YAML file first
     if ! load_configuration_from_yaml "$yaml_file"; then
-        echo "FATAL: Failed to load configuration from gems.yml" >&2
-        echo "Please check that gems.yml exists and contains valid configuration." >&2
+        echo "FATAL: Failed to load configuration from YAML file" >&2
+        echo "Please check that gems.yml or gems.yaml exists and contains valid configuration." >&2
         exit 1
     fi
     
