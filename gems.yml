@@ -101,6 +101,7 @@ configuration:
   default_model: "gemma3n"                      # Default model to use if none specified
   language_detection_model: "gemma3n:e2b"       # Model used for language detection
   default_prompt_template: "Passthrough"        # Default prompt template if none selected
+  # reasoning_effort: "minimal"                 # (Optional) Reasoning effort level: Depends on model capabilities
   
   # Output settings
   result_viewer_app: ""                         # Application to open results: homo, Warp, Terminal, or iTerm2

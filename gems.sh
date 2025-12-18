@@ -30,6 +30,7 @@ API_TIMEOUT=""
 DEFAULT_MODEL=""
 LANGUAGE_DETECTION_MODEL=""
 DEFAULT_PROMPT_TEMPLATE=""
+REASONING_EFFORT=""
 TEMPLATE_YAML_FILE="gems.yml"  # Preferred filename; script also supports gems.yaml
 RESULT_VIEWER_APP=""
 
@@ -117,17 +118,31 @@ function call_llm_api() {
     
     # Construct JSON payload for OpenAI-compatible API
     local json_payload
-    json_payload=$(jq -n \
-        --arg model "$model" \
-        --arg content "$prompt" \
-        --argjson stream "$stream" \
-        '{
-            "model": $model,
-            "messages": [{"role": "user", "content": $content}],
-            "stream": $stream,
-            "max_tokens": null,
-            "temperature": 0.7
-        }')
+    if [[ -n "$REASONING_EFFORT" ]]; then
+        json_payload=$(jq -n \
+            --arg model "$model" \
+            --arg content "$prompt" \
+            --argjson stream "$stream" \
+            --arg reasoning_effort "$REASONING_EFFORT" \
+            '{
+                "model": $model,
+                "messages": [{"role": "user", "content": $content}],
+                "stream": $stream,
+                "reasoning_effort": $reasoning_effort,
+                "temperature": 1
+            }')
+    else
+        json_payload=$(jq -n \
+            --arg model "$model" \
+            --arg content "$prompt" \
+            --argjson stream "$stream" \
+            '{
+                "model": $model,
+                "messages": [{"role": "user", "content": $content}],
+                "stream": $stream,
+                "temperature": 1
+            }')
+    fi
     
     log_verbose "API payload: $json_payload"
     log_verbose "Calling API: $(build_api_url "chat/completions")"
@@ -143,7 +158,15 @@ function call_llm_api() {
     # Make API call with streaming support
     if [[ "$stream" == "true" ]]; then
         # Streaming mode - parse Server-Sent Events
+        # Use a temp file to capture the full response for error handling
+        local stream_temp=$(mktemp)
+        local found_data=false
+        local error_response=""
+        
         while IFS= read -r line; do
+            # Capture all output for error analysis
+            echo "$line" >> "$stream_temp"
+            
             # Parse SSE format: "data: {...}"
             if [[ "$line" == "data: "* ]]; then
                 data_content="${line#data: }"
@@ -152,6 +175,8 @@ function call_llm_api() {
                 if [[ "$data_content" == "[DONE]" ]]; then
                     break
                 fi
+                
+                found_data=true
                 
                 # Extract and output content directly from jq without adding extra newlines
                 printf '%s' "$data_content" | jq -j 'if .choices[0].delta.content != null and .choices[0].delta.content != "" then .choices[0].delta.content else empty end' 2>/dev/null | {
@@ -166,12 +191,55 @@ function call_llm_api() {
                     fi
                 }
             fi
-        done < <(curl -s --no-buffer \
+        done < <(curl -s --no-buffer -w "\nHTTP_STATUS:%{http_code}" \
             "${curl_headers[@]}" \
             --connect-timeout 10 \
             --max-time "$API_TIMEOUT" \
             -d "$json_payload" \
             "$(build_api_url "chat/completions")")
+        
+        local curl_exit=$?
+        
+        # Check if we received any SSE data
+        if [[ "$found_data" == "false" ]]; then
+            # No SSE data received - likely an error
+            local full_response=$(cat "$stream_temp")
+            
+            # Extract HTTP status if present
+            local http_status=""
+            if [[ "$full_response" == *"HTTP_STATUS:"* ]]; then
+                http_status="${full_response##*HTTP_STATUS:}"
+                full_response="${full_response%HTTP_STATUS:*}"
+            fi
+            
+            log_verbose "No streaming data received. HTTP Status: ${http_status:-unknown}"
+            log_verbose "Raw response: $full_response"
+            
+            # Try to parse as JSON error
+            local error_msg=$(echo "$full_response" | jq -r '.error.message // .error // "Unknown error"' 2>/dev/null)
+            if [[ -n "$error_msg" && "$error_msg" != "null" ]]; then
+                echo "API Error: $error_msg" >&2
+                if [[ -n "$http_status" ]]; then
+                    echo "HTTP Status: $http_status" >&2
+                fi
+            else
+                echo "API Error: Empty or invalid response" >&2
+                echo "HTTP Status: ${http_status:-unknown}" >&2
+                if [[ "$VERBOSE_MODE" == true ]]; then
+                    echo "Full response: $full_response" >&2
+                fi
+            fi
+            
+            rm -f "$stream_temp"
+            return 1
+        fi
+        
+        rm -f "$stream_temp"
+        
+        if [[ $curl_exit -ne 0 ]]; then
+            log_verbose "curl failed with exit code: $curl_exit"
+            return $curl_exit
+        fi
     else
         # Non-streaming mode
         curl -s \
@@ -251,17 +319,31 @@ function call_llm_api_with_error_handling() {
     
     # Construct JSON payload
     local json_payload
-    json_payload=$(jq -n \
-        --arg model "$model" \
-        --arg content "$prompt" \
-        --argjson stream "$stream" \
-        '{
-            "model": $model,
-            "messages": [{"role": "user", "content": $content}],
-            "stream": $stream,
-            "max_tokens": null,
-            "temperature": 0.7
-        }')
+    if [[ -n "$REASONING_EFFORT" ]]; then
+        json_payload=$(jq -n \
+            --arg model "$model" \
+            --arg content "$prompt" \
+            --argjson stream "$stream" \
+            --arg reasoning_effort "$REASONING_EFFORT" \
+            '{
+                "model": $model,
+                "messages": [{"role": "user", "content": $content}],
+                "stream": $stream,
+                "reasoning_effort": $reasoning_effort,
+                "temperature": 1
+            }')
+    else
+        json_payload=$(jq -n \
+            --arg model "$model" \
+            --arg content "$prompt" \
+            --argjson stream "$stream" \
+            '{
+                "model": $model,
+                "messages": [{"role": "user", "content": $content}],
+                "stream": $stream,
+                "temperature": 1
+            }')
+    fi
     
     if [[ "$stream" == "true" ]]; then
         # For streaming, we can't easily capture HTTP status, so just use the original function
@@ -555,6 +637,9 @@ function load_configuration_from_yaml() {
         return 1
     fi
     
+    REASONING_EFFORT=$(yq eval '.configuration.reasoning_effort' "$yaml_file" 2>/dev/null | cat)
+    if [[ "$REASONING_EFFORT" == "null" ]]; then REASONING_EFFORT=""; fi
+    
     RESULT_VIEWER_APP=$(yq eval '.configuration.result_viewer_app' "$yaml_file" 2>/dev/null | cat)
     if [[ "$RESULT_VIEWER_APP" == "null" ]]; then RESULT_VIEWER_APP=""; fi
     
@@ -563,6 +648,7 @@ function load_configuration_from_yaml() {
     log_verbose "Default Model: $DEFAULT_MODEL"
     log_verbose "Language Detection Model: $LANGUAGE_DETECTION_MODEL"
     log_verbose "API Timeout: $API_TIMEOUT"
+    log_verbose "Reasoning Effort: $REASONING_EFFORT"
     return 0
 }
 
@@ -645,7 +731,7 @@ function verify_dependencies() {
         log_verbose "✓ curl found (API communication support)"
         
         # Test API endpoint availability
-    if ! curl -s --connect-timeout 5 --max-time 10 "$(build_api_url "models")" &> /dev/null; then
+        if ! curl -s --connect-timeout 5 --max-time 10 "$(build_api_url "models")" &> /dev/null; then
             log_verbose "WARNING: API endpoint '$API_BASE_URL' may not be accessible."
             log_verbose "Make sure your LLM service is running and accessible."
             ((warnings++))
