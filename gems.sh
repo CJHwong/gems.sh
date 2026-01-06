@@ -32,6 +32,7 @@ LANGUAGE_DETECTION_MODEL=""
 DEFAULT_PROMPT_TEMPLATE=""
 REASONING_EFFORT=""
 TEMPLATE_YAML_FILE="gems.yml"  # Preferred filename; script also supports gems.yaml
+CUSTOM_CONFIG_FILE=""          # User-specified config file via -c/--config
 RESULT_VIEWER_APP=""
 
 #==========================================================
@@ -71,11 +72,18 @@ function build_api_url() {
 # Contract:
 # - Input: directory path (required)
 # - Output: echo absolute path to the YAML file if found; return 0
-# - Behavior: honors TEMPLATE_YAML_FILE if that exact file exists; otherwise tries
-#   the same basename with .yml/.yaml, then falls back to gems.yml/gems.yaml
+# - Behavior: honors CUSTOM_CONFIG_FILE if set; otherwise honors TEMPLATE_YAML_FILE
+#   if that exact file exists; otherwise tries the same basename with .yml/.yaml,
+#   then falls back to gems.yml/gems.yaml
 function resolve_yaml_in_dir() {
     local dir="$1"
     [[ -z "$dir" ]] && return 1
+
+    # 0) User-specified config file via -c/--config takes precedence
+    if [[ -n "$CUSTOM_CONFIG_FILE" && -f "$CUSTOM_CONFIG_FILE" ]]; then
+        echo "$CUSTOM_CONFIG_FILE"
+        return 0
+    fi
 
     # 1) Exact match from TEMPLATE_YAML_FILE if present
     if [[ -n "$TEMPLATE_YAML_FILE" && -f "$dir/$TEMPLATE_YAML_FILE" ]]; then
@@ -439,18 +447,21 @@ function get_available_models() {
 
 # Display usage information
 function show_help() {
-    echo "Usage: gems.sh [-m model] [-t template] [-v] [-h] [--list-templates] [--list-models] [--template-info template] [text]"
+    echo "Usage: gems.sh [-c config] [-m model] [-t template] [-v] [-h] [--list-templates] [--list-models] [--template-info template] [text]"
     echo "Options:"
+    echo "  -c <file>               Specify custom config file (default: gems.yml in script dir)"
     echo "  -m <model>              Specify LLM model (overrides gems.yml default)"
     echo "  -t <template>           Specify prompt template to use"
     echo "  -v                      Verbose mode (show debug information)"
     echo "  -h                      Display this help message"
+    echo "  --config <file>         Same as -c"
     echo "  --list-models           List all available models from the API"
     echo "  --list-templates        List all available templates with descriptions"
     echo "  --template-info <name>  Show detailed information about a specific template"
     echo ""
     echo "Configuration:"
     echo "  All settings are loaded from gems.yml or gems.yaml (requires yq)."
+    echo "  Use -c/--config to specify a custom configuration file."
     echo "  Command line arguments override YAML configuration."
     echo ""
     echo "Examples:"
@@ -939,9 +950,63 @@ function validate_configuration() {
 
 # Parse command line arguments
 function parse_arguments() {
-    # Handle long options first
+    # Pre-scan for -c/--config to set CUSTOM_CONFIG_FILE before any YAML loading
+    # This must happen first so --list-templates, --list-models etc. use the right config
+    local args=("$@")
+    local i=0
+    while [[ $i -lt ${#args[@]} ]]; do
+        case "${args[$i]}" in
+            -c)
+                ((i++))
+                if [[ $i -lt ${#args[@]} && "${args[$i]}" != -* ]]; then
+                    CUSTOM_CONFIG_FILE="${args[$i]}"
+                    if [[ ! -f "$CUSTOM_CONFIG_FILE" ]]; then
+                        echo "Error: Config file not found: $CUSTOM_CONFIG_FILE" >&2
+                        exit 1
+                    fi
+                else
+                    echo "Error: -c requires a file path" >&2
+                    exit 1
+                fi
+                ;;
+            --config)
+                ((i++))
+                if [[ $i -lt ${#args[@]} && "${args[$i]}" != -* ]]; then
+                    CUSTOM_CONFIG_FILE="${args[$i]}"
+                    if [[ ! -f "$CUSTOM_CONFIG_FILE" ]]; then
+                        echo "Error: Config file not found: $CUSTOM_CONFIG_FILE" >&2
+                        exit 1
+                    fi
+                else
+                    echo "Error: --config requires a file path" >&2
+                    exit 1
+                fi
+                ;;
+            --config=*)
+                CUSTOM_CONFIG_FILE="${args[$i]#--config=}"
+                if [[ ! -f "$CUSTOM_CONFIG_FILE" ]]; then
+                    echo "Error: Config file not found: $CUSTOM_CONFIG_FILE" >&2
+                    exit 1
+                fi
+                ;;
+        esac
+        ((i++))
+    done
+
+    # Handle long options
     while [[ $# -gt 0 ]]; do
         case $1 in
+            -c)
+                # Already handled in pre-scan, skip the flag and its argument
+                shift
+                ;;
+            --config)
+                # Already handled in pre-scan, skip the flag and its argument
+                shift
+                ;;
+            --config=*)
+                # Already handled in pre-scan, skip
+                ;;
             --list-templates)
                 list_templates
                 exit 0
@@ -971,10 +1036,11 @@ function parse_arguments() {
         esac
         shift
     done
-    
+
     # Handle short options with getopts
-    while getopts ":m:t:vh" opt; do
+    while getopts ":c:m:t:vh" opt; do
         case $opt in
+            c) ;; # Already handled in pre-scan
             m) SELECTED_MODEL="$OPTARG" ;;
             t) SELECTED_TEMPLATE="$OPTARG" ;;
             v) VERBOSE_MODE=true ;;
