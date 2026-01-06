@@ -1017,7 +1017,7 @@ function parse_arguments() {
                 ;;
             --template-info)
                 shift
-                if [[ -n $1 && $1 != -* ]]; then
+                if [[ -n "$1" && "$1" != -* ]]; then
                     show_template_info "$1"
                     exit 0
                 else
