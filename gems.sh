@@ -1634,8 +1634,12 @@ $prompt_escaped
             # Extract the JSON content between the code blocks
             local json_content
             if [[ "$response" == *$'```json\n{'* ]]; then
-                # Multi-line format: extract everything between ```json\n and \n```
-                json_content=$(echo "$response" | sed -n '/```json/,/```/{/```json/d; /```/d; p;}')
+                # Multi-line format: strip first ```json line and last ``` line
+                # This handles nested code blocks within JSON string values
+                json_content=$(printf '%s\n' "$response" | tail -n +2)
+                if [[ "$(printf '%s\n' "$json_content" | tail -1)" == '```' ]]; then
+                    json_content=$(printf '%s\n' "$json_content" | sed '$ d')
+                fi
             else
                 # Single-line format: extract JSON from ```json{...}```
                 json_content=$(echo "$response" | sed -n 's/.*```json\(.*\)```.*/\1/p')
@@ -1667,12 +1671,17 @@ $prompt_escaped
         # Try to find JSON between ``` blocks first
         if [[ "$response" == *'```json'* ]]; then
             # Handle both multiline and single-line ```json{...}``` formats
-            if [[ "$response" == *'```json{'* ]]; then
-                # Single line format: ```json{...}```
+            if [[ "$response" == *'```json{'* && "$response" != *$'\n'* ]]; then
+                # Single line format: ```json{...}``` (entire response on one line)
                 json_content=$(echo "$response" | sed -n 's/.*```json\(.*\)```.*/\1/p')
             else
-                # Multiline format with separate lines
-                json_content=$(printf '%s\n' "$response" | awk '/```json/{flag=1;next}/```/{flag=0}flag')
+                # Multiline format: strip first ```json line and last ``` line
+                # This approach handles nested code blocks within JSON string values
+                json_content=$(printf '%s\n' "$response" | tail -n +2)
+                # Remove trailing ``` if it's the last line
+                if [[ "$(printf '%s\n' "$json_content" | tail -1)" == '```' ]]; then
+                    json_content=$(printf '%s\n' "$json_content" | sed '$ d')
+                fi
             fi
         else
             # Use a more robust approach to extract JSON content
