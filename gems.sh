@@ -1824,14 +1824,22 @@ $prompt_escaped
             
             # Launch background janitor process to wait for homo and clean up
             (
-                # This subshell runs in the background.
-                # Wait for the homo process to exit.
-                while kill -0 "$OUTPUT_PROCESS_PID" 2>/dev/null; do
-                    sleep 1
+                # Capture values locally to avoid race with parent script
+                local _pid="$OUTPUT_PROCESS_PID"
+                local _pipe="$OUTPUT_PIPE"
+
+                # Wait for the homo process to exit with shorter polling interval
+                while kill -0 "$_pid" 2>/dev/null; do
+                    sleep 0.2
                 done
-                
-                # Once homo is closed, clean up the pipe.
-                rm -f "$OUTPUT_PIPE"
+
+                # Small delay to ensure homo has fully released the pipe
+                sleep 0.1
+
+                # Atomically clean up the pipe only if it still exists and is a FIFO
+                if [[ -p "$_pipe" ]]; then
+                    rm -f "$_pipe"
+                fi
             ) &
             
             # Disown the janitor process so it continues running after the script exits
