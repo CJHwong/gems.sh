@@ -1463,15 +1463,29 @@ function cleanup_output() {
         if [[ -n "$OUTPUT_PIPE" ]]; then
             # Close file descriptor 3 (this signals EOF to homo)
             exec 3>&- 2>/dev/null || true
-            
-            # Wait indefinitely for homo to finish (user controls when to close)
-            log_verbose "Waiting for homo process to finish (close the homo window when done viewing)..."
+
+            # Wait for homo to finish with timeout (default 300 seconds)
+            local wait_timeout=${HOMO_CLEANUP_TIMEOUT:-300}
+            local wait_count=0
+            log_verbose "Waiting for homo process to finish (timeout: ${wait_timeout}s)..."
+
             while kill -0 "$OUTPUT_PROCESS_PID" 2>/dev/null; do
                 sleep 0.5
+                wait_count=$((wait_count + 1))
+                # Check timeout (each iteration is 0.5s, so multiply by 2)
+                if [[ $wait_count -ge $((wait_timeout * 2)) ]]; then
+                    log_verbose "Warning: homo process timed out after ${wait_timeout}s, force killing"
+                    kill -9 "$OUTPUT_PROCESS_PID" 2>/dev/null || true
+                    sleep 0.1
+                    break
+                fi
             done
-            
+
             log_verbose "Homo process finished"
-            rm -f "$OUTPUT_PIPE"
+            # Only remove if it's still a FIFO we created
+            if [[ -p "$OUTPUT_PIPE" ]]; then
+                rm -f "$OUTPUT_PIPE"
+            fi
         fi
     fi
     
