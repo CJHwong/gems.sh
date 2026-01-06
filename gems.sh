@@ -1338,8 +1338,16 @@ function setup_output() {
     if [[ "$RESULT_VIEWER_APP" == "homo" ]] && command -v homo &> /dev/null; then
         # Use homo with named pipe when explicitly specified
         OUTPUT_PIPE="$(mktemp -u).fifo"
-        mkfifo "$OUTPUT_PIPE"
-        
+        if [[ -z "$OUTPUT_PIPE" ]]; then
+            echo "Error: Failed to generate temp path for pipe" >&2
+            return 1
+        fi
+
+        if ! mkfifo "$OUTPUT_PIPE" 2>/dev/null; then
+            echo "Error: Failed to create named pipe at $OUTPUT_PIPE" >&2
+            return 1
+        fi
+
         # Start homo in background, reading from the pipe
         homo < "$OUTPUT_PIPE" &
         OUTPUT_PROCESS_PID=$!
