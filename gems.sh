@@ -117,6 +117,61 @@ function resolve_yaml_in_dir() {
     return 1
 }
 
+# Fix literal newlines inside JSON string values
+# LLMs sometimes generate JSON with actual newlines in strings instead of \n escapes
+# This function escapes those newlines to make the JSON valid
+function fix_json_string_newlines() {
+    local input="$1"
+
+    # Use awk to track whether we're inside a JSON string and escape newlines
+    printf '%s' "$input" | awk '
+    BEGIN {
+        in_string = 0
+        escape_next = 0
+        output = ""
+    }
+    {
+        line = $0
+        for (i = 1; i <= length(line); i++) {
+            char = substr(line, i, 1)
+
+            if (escape_next) {
+                output = output char
+                escape_next = 0
+                continue
+            }
+
+            if (char == "\\") {
+                output = output char
+                escape_next = 1
+                continue
+            }
+
+            if (char == "\"") {
+                in_string = !in_string
+            }
+
+            output = output char
+        }
+
+        # At end of line, if we are inside a string, add escaped newline
+        # Otherwise add actual newline (for JSON formatting between fields)
+        if (in_string) {
+            output = output "\\n"
+        } else {
+            output = output "\n"
+        }
+    }
+    END {
+        # Remove trailing newline if present
+        if (substr(output, length(output), 1) == "\n") {
+            output = substr(output, 1, length(output) - 1)
+        }
+        printf "%s", output
+    }
+    '
+}
+
 # Call LLM API with streaming support
 function call_llm_api() {
     local model="$1"
@@ -1753,12 +1808,26 @@ $prompt_escaped
         fi
         
         log_verbose "Extracted JSON content: $json_content"
-        
+
         # Use jq to extract the specific field from JSON response
         # Use printf instead of echo to properly handle newlines and special characters
         extracted_value=$(printf '%s\n' "$json_content" | jq -r ".$json_field" 2>/dev/null)
         local jq_exit_code=$?
-        
+
+        # If jq failed, try fixing literal newlines in JSON strings and retry
+        # LLMs sometimes generate JSON with actual newlines instead of \n escapes
+        if [[ $jq_exit_code -ne 0 ]]; then
+            log_verbose "Initial jq parsing failed, attempting to fix literal newlines in JSON strings"
+            local fixed_json_content
+            fixed_json_content=$(fix_json_string_newlines "$json_content")
+            extracted_value=$(printf '%s\n' "$fixed_json_content" | jq -r ".$json_field" 2>/dev/null)
+            jq_exit_code=$?
+            if [[ $jq_exit_code -eq 0 ]]; then
+                log_verbose "Successfully parsed JSON after fixing newlines"
+                json_content="$fixed_json_content"
+            fi
+        fi
+
         log_verbose "jq exit code: $jq_exit_code"
         log_verbose "Extracted value: '$extracted_value'"
         
