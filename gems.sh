@@ -34,6 +34,7 @@ REASONING_EFFORT=""
 TEMPLATE_YAML_FILE="gems.yml"  # Preferred filename; script also supports gems.yaml
 CUSTOM_CONFIG_FILE=""          # User-specified config file via -c/--config
 RESULT_VIEWER_APP=""
+CLI_MODEL_OVERRIDE=false  # Set to true if -m flag was used on command line
 
 #==========================================================
 # FUNCTIONS
@@ -632,7 +633,13 @@ function load_templates_from_yaml() {
             # Check for json_field
             local json_field=$(yq eval ".prompt_templates.${template_name}.properties.json_field" "$yaml_file" 2>/dev/null | cat)
             if [[ "$json_field" != "null" && -n "$json_field" ]]; then
-                properties+="json_field=$(printf '%s' "$json_field")"
+                properties+="json_field=$(printf '%s' "$json_field") "
+            fi
+
+            # Check for model override (at template level, not in properties)
+            local template_model=$(yq eval ".prompt_templates.${template_name}.model" "$yaml_file" 2>/dev/null | cat)
+            if [[ "$template_model" != "null" && -n "$template_model" ]]; then
+                properties+="model=$(printf '%s' "$template_model")"
             fi
             
             # Store properties if any were found
@@ -1096,7 +1103,7 @@ function parse_arguments() {
     while getopts ":c:m:t:vh" opt; do
         case $opt in
             c) ;; # Already handled in pre-scan
-            m) SELECTED_MODEL="$OPTARG" ;;
+            m) SELECTED_MODEL="$OPTARG"; CLI_MODEL_OVERRIDE=true ;;
             t) SELECTED_TEMPLATE="$OPTARG" ;;
             v) VERBOSE_MODE=true ;;
             h) show_help ;;
@@ -1576,6 +1583,19 @@ function process_with_template() {
     local output_language=$(get_template_property "$SELECTED_TEMPLATE" "output_language" "" 2>/dev/null)
     local json_schema=$(get_template_property "$SELECTED_TEMPLATE" "json_schema" "" 2>/dev/null)
     local json_field=$(get_template_property "$SELECTED_TEMPLATE" "json_field" "" 2>/dev/null)
+    local template_model=$(get_template_property "$SELECTED_TEMPLATE" "model" "" 2>/dev/null)
+
+    # Determine effective model with priority: CLI > template > default
+    local effective_model="$SELECTED_MODEL"
+    if [[ "$CLI_MODEL_OVERRIDE" == "true" ]]; then
+        effective_model="$SELECTED_MODEL"
+        log_verbose "Using CLI-specified model: $effective_model"
+    elif [[ -n "$template_model" ]]; then
+        effective_model="$template_model"
+        log_verbose "Using template-specific model: $effective_model"
+    else
+        log_verbose "Using default model: $effective_model"
+    fi
 
     log_verbose "Template properties for '$SELECTED_TEMPLATE': $TEMPLATE_PROPERTIES[\"$SELECTED_TEMPLATE\"]"
     log_verbose " Detect language: $detect_language"
@@ -1663,8 +1683,8 @@ $prompt_escaped
 "
     fi
     
-    # Stream the API response directly to output 
-    call_llm_api "$SELECTED_MODEL" "$final_prompt" "$temp_response" | write_to_output_stream
+    # Stream the API response directly to output
+    call_llm_api "$effective_model" "$final_prompt" "$temp_response" | write_to_output_stream
     
     # Get exit code from the pipeline
     exit_code=${PIPESTATUS[0]}

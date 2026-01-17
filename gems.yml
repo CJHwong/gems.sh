@@ -35,6 +35,7 @@
 # Each template has the following structure:
 #
 # TemplateName:
+#   model: "model_name"            # Optional: Override default model for this template
 #   template: |
 #     Your prompt text here.
 #     Use {{input}} as placeholder for user input.
@@ -48,6 +49,13 @@
 #         array_field:
 #           - type
 #     json_field: "field_name"     # Extract specific field from JSON response
+#
+# MODEL PRIORITY:
+# ---------------
+# Models are selected with the following priority (highest first):
+#   1. Command line -m flag (always wins)
+#   2. Template-specific model (if defined)
+#   3. Configuration default_model (fallback)
 #
 # TEMPLATE PROPERTIES:
 # --------------------
@@ -194,6 +202,7 @@ prompt_templates:
 
   # Code-related templates
   CodeReview:
+    # model: "codellama"           # Uncomment to use a code-specialized model
     template: |
       Review the following code for best practices, potential bugs, security issues, and performance improvements. Provide specific suggestions with explanations.
       Code: {{input}}
