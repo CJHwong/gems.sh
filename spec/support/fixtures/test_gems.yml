@@ -1,0 +1,40 @@
+# Test fixture for gems.sh unit tests
+
+configuration:
+  api_base_url: "http://localhost:11434/v1"
+  api_key: ""
+  api_timeout: 120
+  default_model: "default-model"
+  language_detection_model: "lang-detect-model"
+  default_prompt_template: "Passthrough"
+  result_viewer_app: ""
+
+prompt_templates:
+  Passthrough:
+    template: "{{input}}"
+
+  SimpleTemplate:
+    template: |
+      Process this: {{input}}
+
+  TemplateWithModel:
+    model: "template-specific-model"
+    template: |
+      Process with specific model: {{input}}
+
+  TemplateWithProperties:
+    template: |
+      Revise: {{input}}
+    properties:
+      detect_language: true
+      json_schema:
+        text: string
+      json_field: text
+
+  TemplateWithModelAndProperties:
+    model: "custom-model"
+    template: |
+      Complex processing: {{input}}
+    properties:
+      detect_language: true
+      output_language: "English"

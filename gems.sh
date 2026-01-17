@@ -2081,40 +2081,60 @@ function copy_to_clipboard() {
 #==========================================================
 # MAIN SCRIPT
 #==========================================================
-# Initialize variables
-VERBOSE_MODE=false
 
-# Parse command line arguments first
-parse_arguments "$@"
+# Main function - entry point for script execution
+function main() {
+    # Initialize variables
+    VERBOSE_MODE=false
 
-# Initialize the prompt templates and load configuration
-init_prompt_templates
+    # Parse command line arguments first
+    parse_arguments "$@"
 
-# Check for required dependencies (after configuration is loaded)
-verify_dependencies
+    # Initialize the prompt templates and load configuration
+    init_prompt_templates
 
-# Validate configuration
-validate_configuration
+    # Check for required dependencies (after configuration is loaded)
+    verify_dependencies
 
-# Show configuration information
-log_verbose "Using model: $SELECTED_MODEL"
-log_verbose "Using API: $API_BASE_URL"
-log_verbose "Language detection model: $LANGUAGE_DETECTION_MODEL"
-log_verbose "Default prompt template: $DEFAULT_PROMPT_TEMPLATE"
+    # Validate configuration
+    validate_configuration
 
-# Select a template if not specified in command line
-select_prompt_template
+    # Show configuration information
+    log_verbose "Using model: $SELECTED_MODEL"
+    log_verbose "Using API: $API_BASE_URL"
+    log_verbose "Language detection model: $LANGUAGE_DETECTION_MODEL"
+    log_verbose "Default prompt template: $DEFAULT_PROMPT_TEMPLATE"
 
-# Validate that the selected template exists
-validate_template
+    # Select a template if not specified in command line
+    select_prompt_template
 
-# Show template info in verbose mode
-log_verbose "Selected template: $SELECTED_TEMPLATE"
-log_verbose "Template content:"
-log_verbose " ${PROMPT_TEMPLATES[\"$SELECTED_TEMPLATE\"]}"
+    # Validate that the selected template exists
+    validate_template
 
-# Process the input with the selected template
-# Filter out unwanted debug output that may leak through
-{
-    process_with_template
-} | grep -v "^json_content=" || true
+    # Show template info in verbose mode
+    log_verbose "Selected template: $SELECTED_TEMPLATE"
+    log_verbose "Template content:"
+    log_verbose " ${PROMPT_TEMPLATES[\"$SELECTED_TEMPLATE\"]}"
+
+    # Process the input with the selected template
+    # Filter out unwanted debug output that may leak through
+    {
+        process_with_template
+    } | grep -v "^json_content=" || true
+}
+
+# Only run main if script is executed directly (not sourced)
+# This allows sourcing for testing while preserving normal execution
+# In Zsh: ZSH_EVAL_CONTEXT contains "toplevel" only when executed directly
+# In Bash: BASH_SOURCE[0] equals $0 when executed directly
+if [[ -n "${ZSH_VERSION:-}" ]]; then
+    # Zsh: check if we're at toplevel (not sourced)
+    if [[ "${ZSH_EVAL_CONTEXT:-}" == "toplevel" ]]; then
+        main "$@"
+    fi
+elif [[ -n "${BASH_VERSION:-}" ]]; then
+    # Bash: check if script is being executed directly
+    if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+        main "$@"
+    fi
+fi
