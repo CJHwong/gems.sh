@@ -309,3 +309,31 @@ The included `gems.yml` provides these templates:
 - Install `jq`: `brew install jq`
 - Check template's `json_schema` configuration
 - Use `-v` flag to see raw LLM response
+
+---
+
+## Testing
+
+The project uses [shellspec](https://shellspec.info/) for BDD-style testing.
+
+### Install shellspec
+
+```sh
+brew install shellspec
+```
+
+### Run tests
+
+```sh
+# Run all tests
+shellspec
+
+# Run with documentation format
+shellspec --format documentation
+
+# Run specific test file
+shellspec spec/unit/call_llm_api_spec.sh
+
+# Run tests matching a pattern
+shellspec --example "JSON extraction"
+```
