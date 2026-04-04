@@ -34,6 +34,8 @@ REASONING_EFFORT=""
 TEMPLATE_YAML_FILE="gems.yml"  # Preferred filename; script also supports gems.yaml
 CUSTOM_CONFIG_FILE=""          # User-specified config file via -c/--config
 RESULT_VIEWER_APP=""
+OUTPUT_TEMPLATE=""
+SKIP_MENU=false
 CLI_MODEL_OVERRIDE=false  # Set to true if -m flag was used on command line
 
 #==========================================================
@@ -43,6 +45,33 @@ CLI_MODEL_OVERRIDE=false  # Set to true if -m flag was used on command line
 # Declare associative arrays at global scope
 typeset -gA PROMPT_TEMPLATES
 typeset -gA TEMPLATE_PROPERTIES
+typeset -gA OUTPUT_TEMPLATE_SECTIONS
+
+# Resolve an output template section, substituting variables.
+# Sets __out_section to the result. Returns 1 if section is absent/empty.
+# Usage: get_output_section "header" "model=foo" && write_to_output "$__out_section"
+function get_output_section() {
+    local section_name="$1"
+    shift
+
+    __out_section="${OUTPUT_TEMPLATE_SECTIONS[$section_name]}"
+    if [[ -z "$__out_section" ]]; then
+        return 1
+    fi
+
+    # Interpret escape sequences (e.g. \n from YAML) without $() newline stripping
+    printf -v __out_section '%b' "$__out_section"
+
+    # Substitute variables passed as key=value pairs
+    local kv
+    for kv in "$@"; do
+        local key="${kv%%=*}"
+        local val="${kv#*=}"
+        __out_section="${__out_section//\{\{$key\}\}/$val}"
+    done
+
+    return 0
+}
 
 # Log message if in verbose mode
 function log_verbose() {
@@ -503,14 +532,18 @@ function get_available_models() {
 
 # Display usage information
 function show_help() {
-    echo "Usage: gems.sh [-c config] [-m model] [-t template] [-v] [-h] [--list-templates] [--list-models] [--template-info template] [text]"
+    echo "Usage: gems.sh [-c config] [-m model] [-t template] [-f format] [-s] [-v] [-h] [--list-templates] [--list-models] [--template-info template] [text]"
     echo "Options:"
     echo "  -c <file>               Specify custom config file (default: gems.yml in script dir)"
     echo "  -m <model>              Specify LLM model (overrides gems.yml default)"
     echo "  -t <template>           Specify prompt template to use"
+    echo "  -f <template>           Specify output template: plain (default) or markdown"
+    echo "  -s                      Skip template selection menu (use default template)"
     echo "  -v                      Verbose mode (show debug information)"
     echo "  -h                      Display this help message"
     echo "  --config <file>         Same as -c"
+    echo "  --format <template>     Same as -f"
+    echo "  --skip-menu             Same as -s"
     echo "  --list-models           List all available models from the API"
     echo "  --list-templates        List all available templates with descriptions"
     echo "  --template-info <name>  Show detailed information about a specific template"
@@ -716,12 +749,50 @@ function load_configuration_from_yaml() {
     RESULT_VIEWER_APP=$(yq eval '.configuration.result_viewer_app' "$yaml_file" 2>/dev/null | cat)
     if [[ "$RESULT_VIEWER_APP" == "null" ]]; then RESULT_VIEWER_APP=""; fi
     
+    # Resolve output template name: CLI (-f) > config > fallback "plain"
+    if [[ -z "$OUTPUT_TEMPLATE" ]]; then
+        local yaml_tmpl=$(yq eval '.configuration.output_template' "$yaml_file" 2>/dev/null | cat)
+        if [[ "$yaml_tmpl" != "null" && -n "$yaml_tmpl" ]]; then
+            OUTPUT_TEMPLATE="$yaml_tmpl"
+        else
+            OUTPUT_TEMPLATE="plain"
+        fi
+    fi
+
+    # Load output template sections into OUTPUT_TEMPLATE_SECTIONS
+    # Use JSON output to preserve literal escape sequences (e.g. \n stays as \n)
+    OUTPUT_TEMPLATE_SECTIONS=()
+    local section_names=("header" "footer" "error" "json_raw_header" "json_extracted_header" "verbose_input" "verbose_prompt")
+    local sn
+    for sn in "${section_names[@]}"; do
+        local raw_val=$(yq eval ".output_templates.${OUTPUT_TEMPLATE}.${sn}" "$yaml_file" -o json 2>/dev/null | cat)
+        # Strip JSON quotes: "value" -> value
+        if [[ "$raw_val" == '"'*'"' ]]; then
+            raw_val="${raw_val#\"}"
+            raw_val="${raw_val%\"}"
+        fi
+        if [[ "$raw_val" != "null" && -n "$raw_val" ]]; then
+            OUTPUT_TEMPLATE_SECTIONS[$sn]="$raw_val"
+        fi
+    done
+    log_verbose "Output template '$OUTPUT_TEMPLATE' loaded (${#OUTPUT_TEMPLATE_SECTIONS[@]} sections)"
+
+    # Load skip_menu setting (default: false)
+    local yaml_skip_menu=$(yq eval '.configuration.skip_menu' "$yaml_file" 2>/dev/null | cat)
+    if [[ "$SKIP_MENU" == "false" ]]; then
+        if [[ "$yaml_skip_menu" == "true" ]]; then
+            SKIP_MENU=true
+        fi
+    fi
+
     log_verbose "Configuration loaded successfully"
     log_verbose "API Base URL: $API_BASE_URL"
     log_verbose "Default Model: $DEFAULT_MODEL"
     log_verbose "Language Detection Model: $LANGUAGE_DETECTION_MODEL"
     log_verbose "API Timeout: $API_TIMEOUT"
     log_verbose "Reasoning Effort: $REASONING_EFFORT"
+    log_verbose "Output Template: $OUTPUT_TEMPLATE"
+    log_verbose "Skip Menu: $SKIP_MENU"
     return 0
 }
 
@@ -1087,6 +1158,18 @@ function parse_arguments() {
                     exit 1
                 fi
                 ;;
+            --format)
+                shift
+                if [[ -n "$1" && "$1" != -* ]]; then
+                    OUTPUT_TEMPLATE="$1"
+                else
+                    echo "Error: --format requires a template name" >&2
+                    exit 1
+                fi
+                ;;
+            -s|--skip-menu)
+                SKIP_MENU=true
+                ;;
             -*)
                 # Keep other options for getopts
                 break
@@ -1100,12 +1183,14 @@ function parse_arguments() {
     done
 
     # Handle short options with getopts
-    while getopts ":c:m:t:vh" opt; do
+    while getopts ":c:m:t:f:vsh" opt; do
         case $opt in
             c) ;; # Already handled in pre-scan
             m) SELECTED_MODEL="$OPTARG"; CLI_MODEL_OVERRIDE=true ;;
             t) SELECTED_TEMPLATE="$OPTARG" ;;
+            f) OUTPUT_TEMPLATE="$OPTARG" ;;
             v) VERBOSE_MODE=true ;;
+            s) SKIP_MENU=true ;;
             h) show_help ;;
             \?) echo "Invalid option: -$OPTARG" >&2; exit 1 ;;
         esac
@@ -1362,13 +1447,18 @@ function select_prompt_template() {
 
     # Prompt user to select template if not provided via command line
     if [ -z "$SELECTED_TEMPLATE" ]; then
-        # Use macOS-specific GUI selection for now
-        # TODO: Add platform detection and alternative selection methods
-        SELECTED_TEMPLATE=$(macos_select_template_gui "$available_templates" "$DEFAULT_PROMPT_TEMPLATE")
+        if [[ "$SKIP_MENU" == "true" ]]; then
+            SELECTED_TEMPLATE="$DEFAULT_PROMPT_TEMPLATE"
+            log_verbose "Skipping template menu, using default: $SELECTED_TEMPLATE"
+        else
+            # Use macOS-specific GUI selection for now
+            # TODO: Add platform detection and alternative selection methods
+            SELECTED_TEMPLATE=$(macos_select_template_gui "$available_templates" "$DEFAULT_PROMPT_TEMPLATE")
 
-        if [ -z "$SELECTED_TEMPLATE" ]; then
-            echo "No template selected. Operation cancelled."
-            exit 0
+            if [ -z "$SELECTED_TEMPLATE" ]; then
+                echo "No template selected. Operation cancelled."
+                exit 0
+            fi
         fi
     fi
 }
@@ -1645,53 +1735,39 @@ function process_with_template() {
     if [ "$VERBOSE_MODE" = true ]; then
         local user_input_escaped=$(printf '%s' "$USER_INPUT" | sed 's/\\/\\\\/g')
         local prompt_escaped=$(printf '%s' "$final_prompt" | sed 's/\\/\\\\/g')
-        
-        write_to_output "### User Input
-<details>
-<summary>Expand</summary>
 
-\`\`\`
-$user_input_escaped
-\`\`\`
-</details>
-
-"
-        write_to_output "### Final Prompt
-<details>
-<summary>Expand</summary>
-
-\`\`\`
-$prompt_escaped
-\`\`\`
-</details>
-
-"
+        get_output_section "verbose_input" "user_input=$user_input_escaped" && \
+            write_to_output "$__out_section"
+        get_output_section "verbose_prompt" "prompt=$prompt_escaped" && \
+            write_to_output "$__out_section"
     fi
     # Execute LLM command with streaming
     local temp_response=$(mktemp)
     local exit_code
-    
-    # Start LLM API call and capture output in real-time
-    write_to_output "### Result
 
-"
-    
+    # Start LLM API call and capture output in real-time
+    get_output_section "header" "template_name=$SELECTED_TEMPLATE" "model=$effective_model" && \
+        write_to_output "$__out_section"
+
     # Check if we need to wrap raw JSON output in details
     if [[ -n "$json_field" && -n "$json_schema" ]]; then
-        write_to_output "#### Raw JSON Output
-
-"
+        get_output_section "json_raw_header" "json_field=$json_field" && \
+            write_to_output "$__out_section"
     fi
-    
+
     # Stream the API response directly to output
-    call_llm_api "$effective_model" "$final_prompt" "$temp_response" | write_to_output_stream
-    
-    # Get exit code from the pipeline
-    exit_code=${PIPESTATUS[0]}
+    # When json_field extraction is active and no header is defined, suppress raw JSON streaming
+    get_output_section "header" 2>/dev/null
+    if [[ -n "$json_field" && -z "$__out_section" ]]; then
+        call_llm_api "$effective_model" "$final_prompt" "$temp_response" > /dev/null
+        exit_code=$?
+    else
+        call_llm_api "$effective_model" "$final_prompt" "$temp_response" | write_to_output_stream
+        exit_code=${PIPESTATUS[0]}
+    fi
     
     # Read the complete response from temp file
     response=$(cat "$temp_response")
-    
     
     rm -f "$temp_response"
     
@@ -1706,19 +1782,17 @@ $prompt_escaped
     
     # Handle errors
     if [[ $exit_code -ne 0 ]]; then
-        write_to_output "
-
-**Error: LLM command failed with code $exit_code**
-"
+        local err_msg="LLM command failed with code $exit_code"
+        get_output_section "error" "message=$err_msg" && \
+            write_to_output "$__out_section" || echo "Error: $err_msg" >&2
         cleanup_output
         exit $exit_code
     fi
-    
-    if [[ -z "$response" ]]; then
-        write_to_output "
 
-**Error: No response received from the model**
-"
+    if [[ -z "$response" ]]; then
+        local err_msg="No response received from the model"
+        get_output_section "error" "message=$err_msg" && \
+            write_to_output "$__out_section" || echo "Error: $err_msg" >&2
         cleanup_output
         exit 1
     fi
@@ -1745,13 +1819,8 @@ $prompt_escaped
         fi
         
         # Close the JSON section
-        write_to_output "
-
----
-
-#### Extracted JSON Field (_${json_field}_)
-
-"
+        get_output_section "json_extracted_header" "json_field=$json_field" && \
+            write_to_output "$__out_section"
     fi
     
     # Extract JSON field if specified (do this before closing pipe)
@@ -1897,12 +1966,8 @@ $prompt_escaped
     fi
     
     # Add finish indicator
-    write_to_output "
-
----
-
-**✓ Processing complete**
-"
+    get_output_section "footer" "template_name=$SELECTED_TEMPLATE" "model=$effective_model" && \
+        write_to_output "$__out_section"
     
     # Close the streaming output now that all details are written
     if [[ -n "$OUTPUT_PROCESS_PID" ]]; then

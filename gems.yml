@@ -113,6 +113,24 @@ configuration:
   
   # Output settings
   result_viewer_app: ""                         # Application to open results: homo, Warp, Terminal, or iTerm2
+  output_template: "plain"                      # Active output template name (see output_templates section)
+  skip_menu: false                              # Skip template selection menu (use default template)
+
+# Output Templates
+# Each template defines optional sections rendered around the LLM response.
+# Omitted or empty sections are not rendered. Variables: {{template_name}}, {{model}},
+# {{message}}, {{json_field}}, {{user_input}}, {{prompt}}
+output_templates:
+  markdown:
+    header: "### Results\n\n"
+    footer: "\n\n---\n\n**✓ Processing complete**\n"
+    error: "\n\n**Error: {{message}}**\n"
+    json_raw_header: "##### Raw JSON Output\n\n"
+    json_extracted_header: "\n---\n\n##### Extracted JSON Field (_{{json_field}}_)\n\n"
+    verbose_input: "#### User Input\n<details><summary>Expand</summary>\n\n```\n{{user_input}}\n```\n</details>\n\n"
+    verbose_prompt: "#### Final Prompt\n<details><summary>Expand</summary>\n\n```\n{{prompt}}\n```\n</details>\n\n"
+
+  plain: {}
 
 # Prompt Templates Configuration
 # This file contains prompt templates and their properties for the gems.sh script

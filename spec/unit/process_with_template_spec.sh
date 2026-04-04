@@ -408,7 +408,7 @@ WRAPPER
 
             When run zsh "$TEST_SCRIPT" "$GEMS_SCRIPT"
             The status should be failure
-            The output should include "No response received"
+            The stderr should include "No response received"
         End
     End
 

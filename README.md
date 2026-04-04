@@ -147,6 +147,9 @@ RESULT_VIEWER_APP="homo"  # Options: homo, Warp, Terminal, iTerm2
 # Use default template (Passthrough)
 ./gems.sh "Explain quantum computing"
 
+# Skip template selection menu (use default)
+./gems.sh -s "Explain quantum computing"
+
 # Specify a template
 ./gems.sh -t TextReviser "Me and him went to store"
 
