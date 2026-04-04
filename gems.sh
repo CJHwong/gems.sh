@@ -523,7 +523,7 @@ function show_help() {
     echo "Examples:"
     echo "  gems.sh 'Fix this sentence: Me and him went to store'"
     echo "  gems.sh -t CodeReview 'function foo() { return x + y; }'"
-    echo "  gems.sh -m gemma3:4b-it-qat -t Summarize 'Long text to summarize...'"
+    echo "  gems.sh -m gemma4:e2b -t Summarize 'Long text to summarize...'"
     echo "  gems.sh --list-models"
 
     exit 0

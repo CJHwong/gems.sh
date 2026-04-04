@@ -106,8 +106,8 @@ configuration:
   api_base_url: "http://localhost:11434/v1"     # OpenAI-compatible API base URL (default: Ollama)
   api_key: ""                                   # API key (optional for local APIs)
   api_timeout: 120                              # Request timeout in seconds
-  default_model: "gemma3n"                      # Default model to use if none specified
-  language_detection_model: "gemma3n:e2b"       # Model used for language detection
+  default_model: "gemma4:e2b"                   # Default model to use if none specified
+  language_detection_model: "gemma4:e2b"       # Model used for language detection
   default_prompt_template: "Passthrough"        # Default prompt template if none selected
   # reasoning_effort: "minimal"                 # (Optional) Reasoning effort level: Depends on model capabilities
   

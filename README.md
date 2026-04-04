@@ -9,7 +9,7 @@ Inspired by the workflow described in this Hacker News post by eliya_confiant: <
 ## Core Features
 
 - **Rich Prompt Templates**: Load from YAML configuration with templates like *TextReviser*, *CodeReview*, *ComplexAnalysis*
-- **Multiple Model Support**: Use `-m` to specify any Ollama model (defaults to `gemma3n`)
+- **Multiple Model Support**: Use `-m` to specify any Ollama model (defaults to `gemma4:e2b`)
 - **Language Detection**: Automatic language detection for templates that support it
 - **JSON Schema Processing**: Define expected response structure and extract specific fields
 - **Template Properties**: Configure language detection, output language, and JSON processing per template
@@ -85,8 +85,8 @@ Inspired by the workflow described in this Hacker News post by eliya_confiant: <
 Download the default models:
 
 ```sh
-ollama pull gemma3n      # Default model
-ollama pull gemma3n:e2b  # Language detection model
+ollama pull gemma4:e2b  # Default model
+ollama pull gemma4:e2b  # Language detection model
 ```
 
 ---
@@ -130,8 +130,8 @@ Edit the configuration section in `gems.sh`:
 
 ```bash
 # LLM settings
-DEFAULT_MODEL="gemma3n"
-LANGUAGE_DETECTION_MODEL="gemma3n:e2b"
+DEFAULT_MODEL="gemma4:e2b"
+LANGUAGE_DETECTION_MODEL="gemma4:e2b"
 
 # Output settings
 RESULT_VIEWER_APP="homo"  # Options: homo, Warp, Terminal, iTerm2
