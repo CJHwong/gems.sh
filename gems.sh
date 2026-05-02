@@ -308,20 +308,23 @@ function call_llm_api() {
             log_verbose "No streaming data received. HTTP Status: ${http_status:-unknown}"
             log_verbose "Raw response: $full_response"
             
-            # Try to parse as JSON error
-            local error_msg=$(echo "$full_response" | jq -r '.error.message // .error // "Unknown error"' 2>/dev/null)
-            if [[ -n "$error_msg" && "$error_msg" != "null" ]]; then
-                echo "API Error: $error_msg" >&2
-                if [[ -n "$http_status" ]]; then
-                    echo "HTTP Status: $http_status" >&2
-                fi
-            else
-                echo "API Error: Empty or invalid response" >&2
-                echo "HTTP Status: ${http_status:-unknown}" >&2
-                if [[ "$VERBOSE_MODE" == true ]]; then
-                    echo "Full response: $full_response" >&2
-                fi
+            # Try to extract the error message from the JSON response.
+            # Use .error // .message first (handles string-valued error fields without
+            # triggering a jq type error on .error.message in older jq versions).
+            # If that yields an object, fall back to .error.message.
+            # If jq fails entirely, show the raw response trimmed to 300 chars.
+            local error_msg
+            error_msg=$(printf '%s\n' "$full_response" | jq -r '.error // .message // empty' 2>/dev/null)
+            if [[ "$error_msg" == "{"* || "$error_msg" == "["* ]]; then
+                error_msg=$(printf '%s\n' "$full_response" | jq -r '.error.message // .message // empty' 2>/dev/null)
             fi
+            if [[ -z "$error_msg" ]]; then
+                error_msg="${full_response:0:300}"
+            fi
+            local api_error="API Error: $error_msg${http_status:+ (HTTP $http_status)}"
+            echo "$api_error" >&2
+            # Write to sidecar file so the parent process (outside this subshell) can read it
+            [[ -n "$temp_file" ]] && echo "$api_error" > "${temp_file}.err"
             
             rm -f "$stream_temp"
             return 1
@@ -1479,41 +1482,15 @@ function validate_template() {
 }
 
 # Global variables for output management
-OUTPUT_PIPE=""
-OUTPUT_PROCESS_PID=""
 OUTPUT_MARKDOWN_FILE=""
 CLEANUP_CALLED="false"
 
 # Setup output stream based on configuration
 function setup_output() {
-    # Setup output destination based on configuration
-    if [[ "$RESULT_VIEWER_APP" == "homo" ]] && command -v homo &> /dev/null; then
-        # Use homo with named pipe when explicitly specified
-        OUTPUT_PIPE="$(mktemp -u).fifo"
-        if [[ -z "$OUTPUT_PIPE" ]]; then
-            echo "Error: Failed to generate temp path for pipe" >&2
-            return 1
-        fi
-
-        if ! mkfifo "$OUTPUT_PIPE" 2>/dev/null; then
-            echo "Error: Failed to create named pipe at $OUTPUT_PIPE" >&2
-            return 1
-        fi
-
-        # Start homo in background, reading from the pipe
-        homo < "$OUTPUT_PIPE" &
-        OUTPUT_PROCESS_PID=$!
-        
-        # Open the pipe for writing with file descriptor 3
-        exec 3>"$OUTPUT_PIPE"
-        
-        log_verbose "Using homo with pipe: $OUTPUT_PIPE (PID: $OUTPUT_PROCESS_PID)"
-    elif [[ -n "$RESULT_VIEWER_APP" ]]; then
-        # Use other configured viewer apps with temporary file
+    if [[ -n "$RESULT_VIEWER_APP" ]]; then
         OUTPUT_MARKDOWN_FILE="$(mktemp).md"
         log_verbose "Using viewer app: $RESULT_VIEWER_APP with file: $OUTPUT_MARKDOWN_FILE"
     else
-        # Direct terminal output
         log_verbose "Using direct terminal output"
     fi
 }
@@ -1521,18 +1498,9 @@ function setup_output() {
 # Write markdown content to output destination
 function write_to_output() {
     local content="$1"
-    
     if [[ -n "$OUTPUT_MARKDOWN_FILE" ]]; then
-        # Append to markdown file
         printf '%s' "$content" >> "$OUTPUT_MARKDOWN_FILE"
-    elif [[ -n "$OUTPUT_PIPE" ]]; then
-        # Write to pipe using file descriptor 3 with error handling
-        if ! printf '%s' "$content" >&3 2>/dev/null; then
-            log_verbose "Pipe closed (window terminated early), stopping output..."
-            return 0  # Return success - early window close is not an error
-        fi
     else
-        # Direct to terminal
         printf '%s' "$content"
     fi
 }
@@ -1540,16 +1508,8 @@ function write_to_output() {
 # Write streaming content character by character for real-time display
 function write_to_output_stream() {
     if [[ -n "$OUTPUT_MARKDOWN_FILE" ]]; then
-        # For files, use stdbuf to avoid buffering with cat
         stdbuf -o0 cat >> "$OUTPUT_MARKDOWN_FILE"
-    elif [[ -n "$OUTPUT_PIPE" ]]; then
-        # For pipes, use stdbuf to avoid buffering with error handling
-        if ! stdbuf -o0 cat >&3 2>/dev/null; then
-            log_verbose "Pipe closed (window terminated early), stopping stream..."
-            return 0  # Return success - early window close is not an error
-        fi
     else
-        # For terminal, use stdbuf to avoid buffering
         stdbuf -o0 cat
     fi
 }
@@ -1603,55 +1563,18 @@ function format_json_in_output_file() {
 
 # Cleanup output resources
 function cleanup_output() {
-    # Prevent multiple cleanup calls
     if [[ "$CLEANUP_CALLED" == "true" ]]; then
         return
     fi
     CLEANUP_CALLED="true"
-    
-    # Clean up homo process if it's still running
-    if [[ -n "$OUTPUT_PROCESS_PID" ]]; then
-        # Close pipe and wait for homo process to finish
-        if [[ -n "$OUTPUT_PIPE" ]]; then
-            # Close file descriptor 3 (this signals EOF to homo)
-            exec 3>&- 2>/dev/null || true
 
-            # Wait for homo to finish with timeout (default 300 seconds)
-            local wait_timeout=${HOMO_CLEANUP_TIMEOUT:-300}
-            local wait_count=0
-            log_verbose "Waiting for homo process to finish (timeout: ${wait_timeout}s)..."
-
-            while kill -0 "$OUTPUT_PROCESS_PID" 2>/dev/null; do
-                sleep 0.5
-                wait_count=$((wait_count + 1))
-                # Check timeout (each iteration is 0.5s, so multiply by 2)
-                if [[ $wait_count -ge $((wait_timeout * 2)) ]]; then
-                    log_verbose "Warning: homo process timed out after ${wait_timeout}s, force killing"
-                    kill -9 "$OUTPUT_PROCESS_PID" 2>/dev/null || true
-                    sleep 0.1
-                    break
-                fi
-            done
-
-            log_verbose "Homo process finished"
-            # Only remove if it's still a FIFO we created
-            if [[ -p "$OUTPUT_PIPE" ]]; then
-                rm -f "$OUTPUT_PIPE"
-            fi
-        fi
-    fi
-    
     if [[ -n "$OUTPUT_MARKDOWN_FILE" ]]; then
-        # Display in configured viewer app
-        # TODO: Add cross-platform viewer support
         case "$RESULT_VIEWER_APP" in
             "homo")
-                # This case should not happen since homo uses pipe, but handle it gracefully
-                log_verbose "Warning: homo was specified but markdown file was used instead"
+                homo "$OUTPUT_MARKDOWN_FILE"
+                rm -f "$OUTPUT_MARKDOWN_FILE"
                 ;;
             "Terminal"|"iTerm2"|"Warp")
-                # Use macOS-specific launcher for now
-                # TODO: Add platform detection and cross-platform app launching
                 macos_launch_viewer_app "$RESULT_VIEWER_APP" "$OUTPUT_MARKDOWN_FILE"
                 ;;
             *)
@@ -1700,8 +1623,12 @@ function process_with_template() {
         local detected_language
         detected_language=$(detect_language "$USER_INPUT" "$LANGUAGE_DETECTION_MODEL")
         log_verbose "Language detected: $detected_language"
-        
-        language_instruction="Output instruction: the input is in language: $detected_language, preserve this language in the output."
+
+        if [[ -n "$detected_language" ]]; then
+            language_instruction="Output instruction: the input is in language: $detected_language, preserve this language in the output."
+        else
+            log_verbose "Language detection returned empty result, skipping language instruction"
+        fi
     elif [[ -n "$output_language" ]]; then
         language_instruction="Output instruction: the input is in language: $output_language, preserve this language in the output."
     fi
@@ -1755,70 +1682,65 @@ function process_with_template() {
             write_to_output "$__out_section"
     fi
 
-    # Stream the API response directly to output
-    # When json_field extraction is active and no header is defined, suppress raw JSON streaming
-    get_output_section "header" 2>/dev/null
-    if [[ -n "$json_field" && -z "$__out_section" ]]; then
+    # When json_field extraction is active, suppress streaming — we write the JSON ourselves with proper fencing after the call
+    if [[ -n "$json_field" ]]; then
         call_llm_api "$effective_model" "$final_prompt" "$temp_response" > /dev/null
         exit_code=$?
     else
         call_llm_api "$effective_model" "$final_prompt" "$temp_response" | write_to_output_stream
-        exit_code=${PIPESTATUS[0]}
+        exit_code=${pipestatus[1]}  # Zsh arrays are 1-indexed; PIPESTATUS[0] is always empty
     fi
     
     # Read the complete response from temp file
     response=$(cat "$temp_response")
-    
-    rm -f "$temp_response"
-    
-    # Format JSON in the output if we have JSON templates
-    if [[ -n "$json_field" && -n "$json_schema" ]]; then
-        if [[ -n "$OUTPUT_MARKDOWN_FILE" ]]; then
-            # Post-process the output file to format JSON properly
-            format_json_in_output_file "$OUTPUT_MARKDOWN_FILE"
-        fi
+
+    # Read API error from sidecar file written by call_llm_api (runs in subshell)
+    local last_api_error=""
+    if [[ -f "${temp_response}.err" ]]; then
+        last_api_error=$(cat "${temp_response}.err")
+        rm -f "${temp_response}.err"
     fi
-    
-    
+
+    rm -f "$temp_response"
+
     # Handle errors
     if [[ $exit_code -ne 0 ]]; then
-        local err_msg="LLM command failed with code $exit_code"
-        get_output_section "error" "message=$err_msg" && \
-            write_to_output "$__out_section" || echo "Error: $err_msg" >&2
+        local err_msg="${last_api_error:-LLM command failed with code $exit_code}"
+        [[ -n "$OUTPUT_MARKDOWN_FILE" ]] && : > "$OUTPUT_MARKDOWN_FILE"
+        get_output_section "error" "message=$err_msg" && write_to_output "$__out_section" || \
+            write_to_output $'\n\n**Error:** '"$err_msg"$'\n'
         cleanup_output
         exit $exit_code
     fi
 
     if [[ -z "$response" ]]; then
-        local err_msg="No response received from the model"
-        get_output_section "error" "message=$err_msg" && \
-            write_to_output "$__out_section" || echo "Error: $err_msg" >&2
+        local err_msg="${last_api_error:-No response received from the model}"
+        [[ -n "$OUTPUT_MARKDOWN_FILE" ]] && : > "$OUTPUT_MARKDOWN_FILE"
+        get_output_section "error" "message=$err_msg" && write_to_output "$__out_section" || \
+            write_to_output $'\n\n**Error:** '"$err_msg"$'\n'
         cleanup_output
         exit 1
     fi
     
-    # If we opened a JSON details block, reformat the compact JSON for better readability
+    # Write raw JSON with code fencing (only when the active format has a json_raw_header section)
     if [[ -n "$json_field" && -n "$json_schema" ]]; then
-        # Check if the response contains compact JSON that needs reformatting
-        if [[ "$response" == *'```json'* && "$response" == *'}```'* ]]; then
-            # The model generates compact JSON in streaming mode, so let's reformat it
-            # Extract the JSON content between the code blocks
-            local json_content
-            if [[ "$response" == *$'```json\n{'* ]]; then
-                # Multi-line format: strip first ```json line and last ``` line
-                # This handles nested code blocks within JSON string values
-                json_content=$(printf '%s\n' "$response" | tail -n +2)
-                if [[ "$(printf '%s\n' "$json_content" | tail -1)" == '```' ]]; then
-                    json_content=$(printf '%s\n' "$json_content" | sed '$ d')
+        get_output_section "json_raw_header" "json_field=$json_field"
+        if [[ -n "$__out_section" ]]; then
+            local raw_json_display="$response"
+            # Strip model's own code fences if present
+            if [[ "$response" == *'```json'* ]]; then
+                local stripped
+                if [[ "$response" == *'```json{'* && "$response" != *$'\n'* ]]; then
+                    stripped=$(printf '%s\n' "$response" | sed -n 's/.*```json\(.*\)```.*/\1/p')
+                else
+                    stripped=$(printf '%s\n' "$response" | awk '/^```json[[:space:]]*$/{skip=1;next} skip && /^```[[:space:]]*$/{skip=0;next} skip{print}' | tr -d '\r')
                 fi
-            else
-                # Single-line format: extract JSON from ```json{...}```
-                json_content=$(echo "$response" | sed -n 's/.*```json\(.*\)```.*/\1/p')
+                [[ -n "$stripped" ]] && raw_json_display="$stripped"
             fi
-            
+            local pretty
+            pretty=$(printf '%s\n' "$raw_json_display" | jq '.' 2>/dev/null) && raw_json_display="$pretty"
+            write_to_output $'```json\n'"$raw_json_display"$'\n```\n'
         fi
-        
-        # Close the JSON section
         get_output_section "json_extracted_header" "json_field=$json_field" && \
             write_to_output "$__out_section"
     fi
@@ -1953,12 +1875,9 @@ function process_with_template() {
                 response="$extracted_value"
             fi
         else
-            log_verbose "Warning: Could not extract JSON field '$json_field', using full response"
-            if [[ "$VERBOSE_MODE" == true ]]; then
-                log_verbose "JSON parsing failed. Response was:"
-                echo "$response" >&2
-            fi
-            # If extraction failed, show the original response as-is (details block was already closed above)
+            log_verbose "Warning: Could not extract JSON field '$json_field' from response"
+            local err_msg="Could not extract field '$json_field' from the model response — the model may have returned an unexpected format."
+            echo "Error: $err_msg" >&2
         fi
     else
         # No JSON extraction needed
@@ -1968,44 +1887,6 @@ function process_with_template() {
     # Add finish indicator
     get_output_section "footer" "template_name=$SELECTED_TEMPLATE" "model=$effective_model" && \
         write_to_output "$__out_section"
-    
-    # Close the streaming output now that all details are written
-    if [[ -n "$OUTPUT_PROCESS_PID" ]]; then
-        # Close pipe to send EOF, then launch a background janitor to clean up
-        if [[ -n "$OUTPUT_PIPE" ]]; then
-            # Close file descriptor 3 (this signals EOF to homo)
-            exec 3>&- 2>/dev/null || true
-            
-            # Launch background janitor process to wait for homo and clean up
-            (
-                # Capture values locally to avoid race with parent script
-                local _pid="$OUTPUT_PROCESS_PID"
-                local _pipe="$OUTPUT_PIPE"
-
-                # Wait for the homo process to exit with shorter polling interval
-                while kill -0 "$_pid" 2>/dev/null; do
-                    sleep 0.2
-                done
-
-                # Small delay to ensure homo has fully released the pipe
-                sleep 0.1
-
-                # Atomically clean up the pipe only if it still exists and is a FIFO
-                if [[ -p "$_pipe" ]]; then
-                    rm -f "$_pipe"
-                fi
-            ) &
-            
-            # Disown the janitor process so it continues running after the script exits
-            disown $! >/dev/null 2>&1
-            
-            log_verbose "Homo is running in the background. The script will now exit."
-            
-            # Clear the variables to prevent the main script's cleanup trap from interfering
-            OUTPUT_PIPE=""
-            OUTPUT_PROCESS_PID=""
-        fi
-    fi
     
     # Copy final result to clipboard
     copy_to_clipboard "$response"
